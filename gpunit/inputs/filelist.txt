@@ -1,0 +1,3 @@
+./inputs/SRR8670766_aa_results.tar.gz,
+./inputs/SRR8670767_aa_results.tar.gz,
+./inputs/SRR8670768_aa_results.tar.gz

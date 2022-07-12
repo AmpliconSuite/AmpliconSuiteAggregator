@@ -1,21 +1,18 @@
 # Run this gpunit loccaly by calling:
-# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="127.0.0.1" -Dgp.url="http://127.0.0.1:8080" -Dgp.user="edjuaro@gmail.com" -Dgp.password="" -Dgpunit.testfolder=`pwd` gpunit
+# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="127.0.0.1" -Dgp.url="http://127.0.0.1:8080" -Dgp.user="edwin5588" -Dgp.password="edwin123" -Dgpunit.testfolder=`pwd` gpunit
 # OR using gp-beta-ami:
-# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="gp-beta-ami.genepattern.org" -Dgp.url="https://gp-beta-ami.genepattern.org" -Dgp.user="edjuaro" -Dgp.password="**PUT_PASSWORD_HERE" -Dgpunit.testfolder=`pwd` gpunit
+# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="gp-beta-ami.genepattern.org" -Dgp.url="https://gp-beta-ami.genepattern.org" -Dgp.user="edwin5588" -Dgp.password="edwin123" -Dgpunit.testfolder=`pwd` gpunit
 
 #
 # Note: this test uses a custom diff command
 #
 
 name: "AmpliconSuiteAggregator_basic_diff_test"
-module: ExampleModule
+module: AmpliconSuiteAggregator
 params:
-    filename: "../data/data_placeholder.txt"
-    add_custom_message: "True"
-    message_to_add: "This message has been added."
-    output_filename: "gp_unit_test_file"
+    Amplicon.Architect.Results: ["./inputs/SRR8670766_aa_results.tar.gz", "./inputs/SRR8670767_aa_results.tar.gz", "./inputs/SRR8670768_aa_results.tar.gz"]
 assertions:
-        diffCmd: diff <%gpunit.diffStripTrailingCR%> -q
-        files:
-            "gp_unit_test_file.txt":
-                diff: "output/basic_test/created_file_ground_truth.txt"
+  jobStatus: success
+  files:
+    aggregated.tar.gz: !!null
+    aggregated_results.csv: !!null

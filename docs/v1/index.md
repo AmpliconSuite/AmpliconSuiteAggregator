@@ -14,4 +14,11 @@ Email: edh021@cloud.ucsd.edu
   - aggregated_results.csv: An aggregated table of results
   - aggregated_results.html: Web format for aggregated_results.csv
 
+### Dockerfile
+  - This module is currently using: 
+    - https://hub.docker.com/repository/docker/genepattern/amplicon-suite-aggregator
+    - genepattern/amplicon-suite-aggregator:v1
+
+
+
 Module was written in Python3.

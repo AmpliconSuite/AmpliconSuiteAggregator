@@ -1,0 +1,21 @@
+# Run this gpunit loccaly by calling:
+# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="127.0.0.1" -Dgp.url="http://127.0.0.1:8080" -Dgp.user="edjuaro@gmail.com" -Dgp.password="" -Dgpunit.testfolder=`pwd` gpunit
+# OR using gp-beta-ami:
+# ant -f ${GPUNIT_HOME}/build.xml -Dgpunit.diffStripTrailingCR="--strip-trailing-cr" -Dgp.host="gp-beta-ami.genepattern.org" -Dgp.url="https://gp-beta-ami.genepattern.org" -Dgp.user="edjuaro" -Dgp.password="**PUT_PASSWORD_HERE" -Dgpunit.testfolder=`pwd` gpunit
+
+#
+# Note: this test uses a custom diff command
+#
+
+name: "AmpliconSuiteAggregator_basic_diff_test"
+module: ExampleModule
+params:
+    filename: "../data/data_placeholder.txt"
+    add_custom_message: "True"
+    message_to_add: "This message has been added."
+    output_filename: "gp_unit_test_file"
+assertions:
+        diffCmd: diff <%gpunit.diffStripTrailingCR%> -q
+        files:
+            "gp_unit_test_file.txt":
+                diff: "output/basic_test/created_file_ground_truth.txt"

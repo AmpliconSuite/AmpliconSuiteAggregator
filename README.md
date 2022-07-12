@@ -1,4 +1,4 @@
-# AmpliconSuiteAggregator
+# Amplicon Suite Aggregator
 Aggregates the results from AmpliconSuite
   - Takes in zip files (completed results of individual Amplicon Suite (Architect) runs)
   - Aggregates results

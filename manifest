@@ -1,7 +1,7 @@
 #AmpliconSuiteAggregator
 #Tue Jul 12 15:21:05 UTC 2022
 JVMLevel=
-LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:7
+LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:0
 author=Edwin Huang;Mesirov Lab
 commandLine=python3.8 /opt/genepatt/AmpliconSuiteAggregator.py --filelist <Amplicon.Architect.Results>
 cpuType=any

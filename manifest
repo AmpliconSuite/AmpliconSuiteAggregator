@@ -1,0 +1,37 @@
+#AmpliconSuiteAggregator
+#Tue Jul 12 15:21:05 UTC 2022
+JVMLevel=
+LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:0
+author=Edwin Huang;Mesirov Lab
+commandLine=python3.8 /opt/genepatt/AmpliconSuiteAggregator.py --filelist <Amplicon.Architect.Results>
+cpuType=any
+description=Module to aggregate individual Amplicon Suite (Architect) runs. Takes in zip files and aggregates the results.
+documentationUrl=https://github.com/genepattern/AmpliconSuiteAggregator/blob/develop/docs/v1/index.md
+fileFormat=
+job.cpuCount=1
+job.docker.image=genepattern/amplicon-suite-aggregator\:v1
+job.memory=4GB
+job.walltime=01:00:00
+language=any
+name=AmpliconSuiteAggregator
+os=any
+p1_MODE=IN
+p1_TYPE=FILE
+p1_default_value=
+p1_description=Compressed (tar.gz) files of the results from individual or grouped Amplicon Architect runs.
+p1_fileFormat=.tar.gz
+p1_flag=
+p1_name=Amplicon.Architect.Results
+p1_numValues=0+
+p1_optional=
+p1_prefix=
+p1_prefix_when_specified=
+p1_type=java.io.File
+p1_value=
+privacy=public
+quality=preproduction
+src.repo=https\://github.com/genepattern/AmpliconSuiteAggregator
+taskDoc=
+taskType=
+userid=edwin5588
+version=Update docker image and parameter description.

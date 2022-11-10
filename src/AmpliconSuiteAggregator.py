@@ -13,7 +13,7 @@ import tarfile
 import shutil
 import json
 import subprocess
-
+import ast
 
 
 
@@ -26,6 +26,7 @@ class Aggregator():
         self.unzip()
         self.aggregate_tables()
         self.move_files()
+        self.json_modifications()
         self.cleanup()
 
 
@@ -125,6 +126,7 @@ class Aggregator():
             json.dump({'runs': runs}, run_file)
         run_file.close()
 
+
     def aggregate_json(self, json_files):
         """
         Aggregates json files from separate samples
@@ -148,8 +150,9 @@ class Aggregator():
 
         shutil.move('/opt/genepatt/files', '/opt/genepatt/extracted/files')
         shutil.copy('run.json', '/opt/genepatt/extracted/run.json')
-        shutil.copy('aggregated_results.csv', '/opt/genepatt/extracted/aggregated_results.csv')
-        shutil.copy('aggregated_results.html', '/opt/genepatt/extracted/aggregated_results.html')
+        shutil.move('/opt/genepatt/extracted', 'extracted')
+        shutil.copy('aggregated_results.csv', 'extracted/aggregated_results.csv')
+        shutil.copy('aggregated_results.html', 'extracted/aggregated_results.html')
 
 
     def tardir(self, path, tar_name):
@@ -169,8 +172,81 @@ class Aggregator():
         """
         self.tardir('extracted', f'{self.output_name}.tar.gz')
         shutil.rmtree('extracted')
+        # shutil.rmtree('/opt/genepatt/extracted')
 
 
+    def json_modifications(self):
+        """
+        Modify outputs of the final run.json
+
+        Modifications include:
+        1. correcting string of list
+        2. abslute pathing to relative pathing
+        """
+        with open('run.json') as json_file:
+            dict = json.load(json_file)
+        json_file.close()
+
+        for sample in dict['runs'].keys():
+            ## String of list to list
+            for sample_num in range(len(dict['runs'][sample])):
+                try:
+                    sample_name = dict['runs'][sample][sample_num]['Sample name']
+
+                    dict['runs'][sample][sample_num]['Location'] = dict['runs'][sample][sample_num]['Location'].split("|")
+
+                    ## feature bed location relative path conversion
+                    feature_bed_loc = dict['runs'][sample][sample_num]['Feature BED file']
+                    print(feature_bed_loc)
+                    basename = os.path.basename(feature_bed_loc)
+                    dict['runs'][sample][sample_num]['Feature BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/{sample_name}_classification_bed_files/{basename}"
+
+                    ## aa png file
+                    aa_png_location = dict['runs'][sample][sample_num]['AA PNG file']
+                    basename = os.path.basename(aa_png_location)
+                    dict['runs'][sample][sample_num]['AA PNG file'] = f"AA_outputs/{sample_name}/{sample_name}_AA_results/{basename}"
+
+
+                    ## aa pdf file
+                    aa_pdf_location = dict['runs'][sample][sample_num]['AA PDF file']
+                    basename = os.path.basename(aa_pdf_location)
+                    dict['runs'][sample][sample_num]['AA PDF file'] = f"AA_outputs/{sample_name}/{sample_name}_AA_results/{basename}"
+
+                    ## cnv bed file
+                    cnv_bed_location = dict['runs'][sample][sample_num]['CNV BED file']
+                    basename = os.path.basename(cnv_bed_location)
+                    dict['runs'][sample][sample_num]['CNV BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/files/{basename}"
+
+
+
+                    ## run metadata json
+                    metadata_json_location = dict['runs'][sample][sample_num]['"Run metadata JSON"']
+                    basename = os.path.basename(metadata_json_location)
+                    dict['runs'][sample][sample_num]['AA PDF file'] = f"AA_outputs/{sample_name}/{basename}"
+
+
+
+                except Exception as e:
+                    print(e)
+
+                try:
+                    dict['runs'][sample][sample_num]['Oncogenes'] = dict['runs'][sample][sample_num]['Oncogenes'].split("|")
+                except:
+                    print(f"Oncogene for sample{sample_num} is None")
+
+
+
+        with open('extracted/run.json', 'w') as json_file:
+            json.dump(dict, json_file)
+        json_file.close()
+
+    def absolute_to_relative_fp(fp, sample_name):
+        """
+        Converts an absolute file path to a relative file path
+        """
+
+        filename = os.path.basename(fp)
+        return f"AA_outputs/{sample_name}/{sample_name}_classification/"
 
 if __name__ == "__main__":
     # os.environ["AA_DATA_REPO"] = os.path.join('/opt/genepatt', '.data_repo')

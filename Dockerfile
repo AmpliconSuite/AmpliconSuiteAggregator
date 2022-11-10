@@ -28,6 +28,5 @@ RUN pip3 install pandas
 COPY src* /opt/genepatt
 
 ## for testing purposes
-#RUN mkdir /opt/genepatt/testzips
-#COPY testzips/* /opt/genepatt/testzips
-#COPY files.txt /opt/genepatt
+RUN mkdir /opt/genepatt/gpunit
+COPY gpunit/* /opt/genepatt/gpunit

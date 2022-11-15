@@ -3,8 +3,6 @@ FROM ubuntu:20.04
 
 
 RUN mkdir /opt/genepatt && chmod a+rwx /opt/genepatt
-RUN mkdir /opt/genepatt/extracted
-RUN mkdir /opt/genepatt/aggregated
 RUN mkdir /opt/genepatt/programs
 RUN mkdir /opt/genepatt/files
 #COPY libs/AmpliconClassifier-main.zip /opt/genepatt/programs

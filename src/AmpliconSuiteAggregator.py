@@ -25,8 +25,8 @@ class Aggregator():
         print(self.get_zip_paths())
         self.unzip()
         self.aggregate_tables()
-        self.move_files()
         self.json_modifications()
+        self.move_files()
         self.cleanup()
 
 
@@ -61,7 +61,7 @@ class Aggregator():
             fp = os.path.join(self.root, zip_fp)
             try:
                 with tarfile.open(fp, 'r') as output_zip:
-                    output_zip.extractall('./extracted')
+                    output_zip.extractall('./AA_outputs')
                 output_zip.close()
             except Exception as e:
                 print("The zip: " + fp + " ran into an error when unzipping.")
@@ -69,14 +69,14 @@ class Aggregator():
 
         samples = []
         # parse contents of zip to get sample_name
-        for root, dirs, files in os.walk("extracted", topdown=False):
+        for root, dirs, files in os.walk("./AA_outputs", topdown=False):
             sample_name = ""
             for name in dirs:
                 dir_name = os.path.join(root, name)
                 if "_cnvkit_output" in dir_name:
                     dir_name = dir_name.split("/")[-1]
                     sample_name = dir_name.replace("_cnvkit_output", "")
-                    sample_name = sample_name.replace('extracted/', "")
+                    sample_name = sample_name.replace('AA_outputs/', "")
                     samples.append(sample_name)
         self.samples = samples
         print(self.samples)
@@ -100,8 +100,12 @@ class Aggregator():
         graph_files = []
         runs = {}
         sample_num = 1
+        if not os.path.exists('results'):
+            os.mkdir('results')
+            os.chmod('results', 0o777)
+
         # aggregate results
-        for root, dirs, files in os.walk("extracted", topdown = False):
+        for root, dirs, files in os.walk("AA_outputs", topdown = False):
             for name in files:
                 if "_result_table.tsv" in name:
                     result_table_fp = os.path.join(root, name)
@@ -122,7 +126,7 @@ class Aggregator():
         ## output the table
         aggregate.to_csv('aggregated_results.csv')
         aggregate.to_html('aggregated_results.html')
-        with open('run.json', 'w') as run_file:
+        with open('results/run.json', 'w') as run_file:
             json.dump({'runs': runs}, run_file)
         run_file.close()
 
@@ -148,11 +152,11 @@ class Aggregator():
         Move files to correct location for output
         """
 
-        shutil.move('/opt/genepatt/files', '/opt/genepatt/extracted/files')
-        shutil.copy('run.json', '/opt/genepatt/extracted/run.json')
-        shutil.move('/opt/genepatt/extracted', 'extracted')
-        shutil.copy('aggregated_results.csv', 'extracted/aggregated_results.csv')
-        shutil.copy('aggregated_results.html', 'extracted/aggregated_results.html')
+        # shutil.move('/opt/genepatt/files', '/opt/genepatt/extracted/files')
+
+        shutil.move('aggregated_results.csv', 'results/aggregated_results.csv')
+        shutil.move('aggregated_results.html', 'results/aggregated_results.html')
+        shutil.move('AA_outputs', 'results')
 
 
     def tardir(self, path, tar_name):
@@ -170,8 +174,8 @@ class Aggregator():
         Zips the aggregate results, and deletes files for cleanup
 
         """
-        self.tardir('extracted', f'{self.output_name}.tar.gz')
-        shutil.rmtree('extracted')
+        self.tardir('results', f'{self.output_name}.tar.gz')
+        shutil.rmtree('results')
         # shutil.rmtree('/opt/genepatt/extracted')
 
 
@@ -183,7 +187,7 @@ class Aggregator():
         1. correcting string of list
         2. abslute pathing to relative pathing
         """
-        with open('run.json') as json_file:
+        with open('results/run.json') as json_file:
             dict = json.load(json_file)
         json_file.close()
 
@@ -193,7 +197,12 @@ class Aggregator():
                 try:
                     sample_name = dict['runs'][sample][sample_num]['Sample name']
 
-                    dict['runs'][sample][sample_num]['Location'] = dict['runs'][sample][sample_num]['Location'].split("|")
+                    locations = dict['runs'][sample][sample_num]['Location']
+                    if "|" in locations:
+                        dict['runs'][sample][sample_num]['Location'] = locations.split("|")
+                    else:
+                        dict['runs'][sample][sample_num]['Location'] = locations.strip('][').split(',')
+
 
                     ## feature bed location relative path conversion
                     feature_bed_loc = dict['runs'][sample][sample_num]['Feature BED file']
@@ -217,8 +226,6 @@ class Aggregator():
                     basename = os.path.basename(cnv_bed_location)
                     dict['runs'][sample][sample_num]['CNV BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/files/{basename}"
 
-
-
                     ## run metadata json
                     metadata_json_location = dict['runs'][sample][sample_num]['"Run metadata JSON"']
                     basename = os.path.basename(metadata_json_location)
@@ -230,13 +237,18 @@ class Aggregator():
                     print(e)
 
                 try:
-                    dict['runs'][sample][sample_num]['Oncogenes'] = dict['runs'][sample][sample_num]['Oncogenes'].split("|")
+                    oncogenes = dict['runs'][sample][sample_num]['Oncogenes']
+                    if "|" in oncogenes:
+                        dict['runs'][sample][sample_num]['Oncogenes'] = oncogenes.split("|")
+                    else:
+                        dict['runs'][sample][sample_num]['Oncogenes'] = oncogenes.strip('][').split(',')
+
                 except:
                     print(f"Oncogene for sample{sample_num} is None")
 
 
 
-        with open('extracted/run.json', 'w') as json_file:
+        with open('results/run.json', 'w') as json_file:
             json.dump(dict, json_file)
         json_file.close()
 
@@ -255,7 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("-flist", "--filelist", type = str,
             help = "List of zip files to use")
 
-    parser.add_argument("--output_name", type = str, help = "Output Prefix")
+    parser.add_argument("--output_name", type = str, help = "Output Prefix", default = "aggregated")
 
     args = parser.parse_args()
 

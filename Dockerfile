@@ -3,12 +3,6 @@ FROM ubuntu:20.04
 
 
 RUN mkdir /opt/genepatt && chmod a+rwx /opt/genepatt
-RUN mkdir /opt/genepatt/programs
-RUN mkdir /opt/genepatt/files
-#COPY libs/AmpliconClassifier-main.zip /opt/genepatt/programs
-
-
-
 
 ## Install required packages
 RUN apt-get update
@@ -21,7 +15,7 @@ RUN apt-get install -y unzip wget
 WORKDIR /opt/genepatt
 
 
-RUN pip3 install pandas
+RUN pip3 install pandas==1.5.3
 
 COPY src* /opt/genepatt
 

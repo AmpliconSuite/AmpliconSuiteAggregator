@@ -1,3 +1,0 @@
-/opt/genepatt/gpunit/SRR8670766_aa_results.tar.gz
-/opt/genepatt/gpunit/SRR8670767_aa_results.tar.gz
-/opt/genepatt/gpunit/SRR8670768_aa_results.tar.gz

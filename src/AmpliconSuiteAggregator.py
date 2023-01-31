@@ -14,6 +14,7 @@ import shutil
 import json
 import subprocess
 import ast
+import zipfile
 
 
 
@@ -51,6 +52,8 @@ class Aggregator():
     def unzip(self):
         """
         Unzips the zip files, and get directories for files within
+        creates a dictionary that contains information to run make results table .py from Jens
+        deletes unnecessary files
 
         returns -- None
         """
@@ -60,28 +63,103 @@ class Aggregator():
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
-                with tarfile.open(fp, 'r') as output_zip:
-                    output_zip.extractall('./AA_outputs')
-                output_zip.close()
+                if ".tar.gz" in zip_fp:
+                    sample_name = os.path.basename(zip_fp).replace(".tar.gz", "")
+                    destination = f'./AA_outputs/{sample_name}'
+                    print(sample_name)
+                    with tarfile.open(fp, 'r') as output_zip:
+                        output_zip.extractall(destination)
+                    output_zip.close()
+
+                elif ".zip" in zip_fp:
+                    sample_name = os.path.basename(zip_fp).replace(".zip", "")
+                    destination = f'./AA_outputs/{sample_name}'
+                    with zipfile.ZipFile(fp, 'r') as zip_ref:
+                        zip_ref.extractall(destination)
+                    zip_ref.close()
+
+                ## Check if extracted contents is a directory,
+                ## and if there is only one directory. Make that the new sample_name
+                ## and move it upwards.
+                if len(os.listdir(destination)) == 1:
+                    for file in os.listdir(destination):
+
+                        if os.path.isdir(f"/opt/genepatt/AA_outputs/{sample_name}/{file}"):
+                            os.system(f"mv -v /opt/genepatt/AA_outputs/{sample_name}/{file} /opt/genepatt/AA_outputs/{file}")
+                            os.system(f"rm -r /opt/genepatt/AA_outputs/{sample_name}/")
             except Exception as e:
                 print("The zip: " + fp + " ran into an error when unzipping.")
                 print(e)
 
         samples = []
+        aa_result_paths = []
+        ac_input_paths = []
+        profiles_tsv_locations = []
+        cnv_calls_locations = []
+
+        make_results_dict = {}
         # parse contents of zip to get sample_name
+        ## remove everything other than AA_results
         for root, dirs, files in os.walk("./AA_outputs", topdown=False):
             sample_name = ""
             for name in dirs:
                 dir_name = os.path.join(root, name)
-                if "_cnvkit_output" in dir_name:
+                if "_AA_results" in dir_name:
                     dir_name = dir_name.split("/")[-1]
-                    sample_name = dir_name.replace("_cnvkit_output", "")
+                    sample_name = dir_name.replace("_AA_results", "")
                     sample_name = sample_name.replace('AA_outputs/', "")
                     samples.append(sample_name)
-        self.samples = samples
-        print(self.samples)
+
+                    make_results_dict[f'sample_{sample_name}'] = {
+                    'name':sample_name,
+                    'ac_input':'',
+                    'profiles_tsv':'',
+                    'cnv_calls':''
+                    }
 
 
+                    aa_results_dir = os.path.join(root, name)
+                    aa_result_paths.append(aa_results_dir)
+                    os.system(f'bash /opt/genepatt/make_input.sh {os.path.join(root, name)} {os.path.join(root, f"{sample_name}_AC_inputs")}')
+                    make_results_dict[f'sample_{sample_name}']['ac_input'] = os.path.join(root, f"{sample_name}_AC_inputs.input")
+
+            for file in files:
+                if 'amplicon_classification_profiles.tsv' in file:
+                    profiles_tsv_location = os.path.join(root, file)
+                    profiles_tsv_locations.append(profiles_tsv_location)
+                elif 'CNV_CALLS.bed' in file:
+                    cnv_calls = os.path.join(root, file)
+                    cnv_calls_locations.append(cnv_calls)
+                elif ('.stderr' in file) or ('_run_AA_ac.sb' in file) or ("_run_PAA.sb" in file) or ("stderr" in file) or ('stdout' in file) or (".sb" in file):
+                    os.remove(os.path.join(root, file))
+
+
+
+
+        for sample in make_results_dict.keys():
+            name = make_results_dict[sample]['name']
+            for tsv in profiles_tsv_locations:
+                if name in tsv:
+                    make_results_dict[sample]['profiles_tsv'] = tsv
+            for cnv in cnv_calls_locations:
+                if name in cnv:
+                    make_results_dict[sample]['cnv_calls'] = cnv
+
+
+        # print(make_results_dict)
+        # run_make_results_table(make_results_dict)
+
+
+
+        # # move AA results to another directory and run results table there
+        # destination = os.path.join("/opt/genepatt/temp")
+        # if not os.path.exists("/opt/genepatt/temp"):
+        #     os.mkdir(destination)
+        # for aa_result in range(len(aa_result_paths)):
+        #     sample_dest = os.path.join(destination, samples[aa_result], f"{samples[aa_result]}_AA_results")
+        #     shutil.move(aa_result_paths[aa_result], sample_dest)
+        #     os.system(f'bash /opt/genepatt/make_input.sh {sample_dest} {os.path.join(destination, samples[aa_result], f"AC_inputs.txt")}')
+        #     os.system(f'python3 /opt/genepatt/')
 
     def aggregate_tables(self):
         """
@@ -109,12 +187,17 @@ class Aggregator():
             for name in files:
                 if "_result_table.tsv" in name:
                     result_table_fp = os.path.join(root, name)
-                    df = pd.read_csv(result_table_fp, delimiter = '\t')
-                    aggregate = pd.concat([aggregate, df], ignore_index = True)
+                    try:
+                        df = pd.read_csv(result_table_fp, delimiter = '\t')
+                        aggregate = pd.concat([aggregate, df], ignore_index = True)
+                        runs[f'sample_{sample_num}'] = json.loads(df.to_json(orient = 'records'))
+                        sample_num += 1
+                    except:
+                        continue
+
 
                     ## convert to json
-                    runs[f'sample_{sample_num}'] = json.loads(df.to_json(orient = 'records'))
-                    sample_num += 1
+
 
             for dir in dirs:
                 if "files" == dir:
@@ -206,7 +289,7 @@ class Aggregator():
 
                     ## feature bed location relative path conversion
                     feature_bed_loc = dict['runs'][sample][sample_num]['Feature BED file']
-                    print(feature_bed_loc)
+                    # print(feature_bed_loc)
                     basename = os.path.basename(feature_bed_loc)
                     dict['runs'][sample][sample_num]['Feature BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/{sample_name}_classification_bed_files/{basename}"
 
@@ -248,6 +331,7 @@ class Aggregator():
 
 
 
+
         with open('results/run.json', 'w') as json_file:
             json.dump(dict, json_file)
         json_file.close()
@@ -259,6 +343,26 @@ class Aggregator():
 
         filename = os.path.basename(fp)
         return f"AA_outputs/{sample_name}/{sample_name}_classification/"
+
+# def run_make_results_table(make_results_dict):
+#     """
+#     Runs Jens's 'make_input.sh' and 'make_results_table.py'
+#     on extracted AA_results
+#     """
+#     for sample in make_results_dict.keys():
+#         name = make_results_dict[sample]['name']
+#         input = make_results_dict[sample]['ac_input']
+#         profiles = make_results_dict[sample]['profiles_tsv']
+#         cnv = make_results_dict[sample]['cnv_calls']
+#
+#
+#         ## run make_results_table.py for each sample
+#         make_results_script = f'python3 /opt/genepatt/make_results_table.py --input {input} --classification_file {profiles}'
+#         print(make_results_script)
+#         os.system(make_results_script)
+
+
+
 
 if __name__ == "__main__":
     # os.environ["AA_DATA_REPO"] = os.path.join('/opt/genepatt', '.data_repo')

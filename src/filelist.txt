@@ -1,0 +1,4 @@
+/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/src/example.tar.gz
+/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/gpunit/inputs/FLO-1.zip
+/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/gpunit/inputs/JH-EsoAd1.zip
+/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/src/testing/Contino_AA_outputs_013023.tar.gz

@@ -102,7 +102,7 @@ class Aggregator():
                 self.unzip_file(fp, dest_root)
 
         ## moving required AA files to correct destination
-        output_dir = "./output/AA_outputs/"
+        output_dir = "./results/AA_outputs/"
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -137,7 +137,7 @@ class Aggregator():
         runs = {}
         sample_num = 1
         # aggregate results
-        for root, dirs, files in os.walk("./output/AA_outputs", topdown = False):
+        for root, dirs, files in os.walk("./results/AA_outputs", topdown = False):
             for name in files:
                 if "_result_table.tsv" in name:
                     result_table_fp = os.path.join(root, name)
@@ -150,9 +150,9 @@ class Aggregator():
                         continue
 
         ## output the table
-        aggregate.to_csv('./output/aggregated_results.csv')
-        aggregate.to_html('./output/aggregated_results.html')
-        with open('./output/run.json', 'w') as run_file:
+        aggregate.to_csv('./results/aggregated_results.csv')
+        aggregate.to_html('./results/aggregated_results.html')
+        with open('./results/run.json', 'w') as run_file:
             json.dump({'runs': runs}, run_file)
         run_file.close()
 
@@ -195,18 +195,18 @@ class Aggregator():
         Zips the aggregate results, and deletes files for cleanup
 
         """
-        self.tardir('./output', f'{self.output_name}.tar.gz')
-        shutil.rmtree('./output')
+        self.tardir('./results', f'{self.output_name}.tar.gz')
+        shutil.rmtree('./results')
 
     def find_file(self, basename):
         """
         Finds a specific file given sample name and file suffix
         """
-        for root, dirs, files in os.walk('./output/AA_outputs', topdown = True):
+        for root, dirs, files in os.walk('./results/AA_outputs', topdown = True):
             for file in files:
                 fp = os.path.join(root, file)
                 if basename == file:
-                    return fp.replace('./output/', "")
+                    return fp.replace('./results/', "")
         return 'Not Provided'
     
     def string_to_list(self, string):
@@ -216,7 +216,7 @@ class Aggregator():
         if "|" in string:
             return string.split("|")
         else:
-            return string.strip('][').replace("'", "").replace(" ", "").split(',')
+            return string.strip('][').replace(" ", "").split(',')
 
     def json_modifications(self):
         """
@@ -226,7 +226,7 @@ class Aggregator():
         1. correcting string of list
         2. abslute pathing to relative pathing
         """
-        with open('./output/run.json') as json_file:
+        with open('./results/run.json') as json_file:
             dct = json.load(json_file)
         json_file.close()
 
@@ -262,7 +262,7 @@ class Aggregator():
                         print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
 
 
-        with open('./output/run.json', 'w') as json_file:
+        with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file)
         json_file.close()
 
@@ -286,7 +286,7 @@ def validate():
     else:
         raise Exception("OUTPUT FOLDER NOT CREATED...")
     
-    with open('./output/run.json') as json_file:
+    with open('./results/run.json') as json_file:
         dct = json.load(json_file)
     json_file.close()
 

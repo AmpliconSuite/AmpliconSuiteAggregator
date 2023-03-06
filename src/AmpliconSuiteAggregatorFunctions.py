@@ -16,7 +16,8 @@ import subprocess
 import ast
 import zipfile
 
-OUTPUT_PATH = os.path.join('output', 'AA_output')
+DEST_ROOT = os.path.join("./extracted_from_zips")
+OUTPUT_PATH = os.path.join("./results/AA_outputs")
 
 class Aggregator():
     def __init__(self, filelist, root, output_name):
@@ -27,7 +28,7 @@ class Aggregator():
         self.unzip()
         self.aggregate_tables()
         self.json_modifications()
-        # self.move_files()
+        self.move_files()
         self.cleanup()
 
 
@@ -55,18 +56,18 @@ class Aggregator():
         try:
             if ".tar.gz" in fp:
                 zip_name = os.path.basename(fp).replace(".tar.gz", "")
-                destination = f'./{dest_root}/{zip_name}'
+                destination = f'{dest_root}/{zip_name}'
                 with tarfile.open(fp, 'r') as output_zip:
                     output_zip.extractall(destination)
                 output_zip.close()
             elif ".zip" in fp:
                     zip_name = os.path.basename(fp).replace(".zip", "")
-                    destination = f'./{dest_root}/{zip_name}'
+                    destination = f'{dest_root}/{zip_name}'
                     with zipfile.ZipFile(fp, 'r') as zip_ref:
                         zip_ref.extractall(destination)
                     zip_ref.close()
         except:
-            print(f'No need to extract: ./{fp}/{dest_root}')
+            print(f'No need to extract: {fp}/{dest_root}')
 
     def unzip(self):
         """
@@ -75,57 +76,45 @@ class Aggregator():
         returns -- a list of samples, root directory of where the files are located.
         """
 
-        # os.mkdir('all_AA_results')
-
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
-                dest_root = 'extracted_from_zips'
-                self.unzip_file(fp, dest_root)
+                self.unzip_file(fp, DEST_ROOT)
 
             except Exception as e:
                 print("The zip: " + fp + " ran into an error when unzipping.")
                 print(e)
-                ## Check if extracted contents is a directory,
-                ## and if there is only one directory. Make that the new sample_name
-                ## and move it upwards.
-                # if len(os.listdir(destination)) == 1:
-                #     for file in os.listdir(destination):
-                #         if os.path.isdir(f"/opt/genepatt/AA_outputs/{zip_name}/{file}"):
-                #             os.system(f"mv -v /opt/genepatt/AA_outputs/{zip_name}/{file} /opt/genepatt/AA_outputs/{file}")
-                #             os.system(f"rm -r /opt/genepatt/AA_outputs/{zip_name}/")
 
         ## find all nested zips and extract them. 
-        for root, dirs, files in os.walk(dest_root):
+        for root, dirs, files in os.walk(DEST_ROOT):
             for file in files:
                 fp = os.path.join(root, file)
-                self.unzip_file(fp, dest_root)
+                self.unzip_file(fp, DEST_ROOT)
 
         ## moving required AA files to correct destination
-        output_dir = "./results/AA_outputs/"
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        if not os.path.exists(OUTPUT_PATH):
+            os.makedirs(OUTPUT_PATH)
 
         ## find samples and move files
         samples = []
-        for root, dirs, files in os.walk(dest_root, topdown = True):
+        for root, dirs, files in os.walk(DEST_ROOT, topdown = True):
             for dir in dirs: 
                 fp = os.path.join(root, dir)
-                try:
-                    sample_name = re.findall(f'^{dest_root}\/.*\/(.*)_AA_results$', fp)[0]
-                    samples.append(sample_name)
-                    
-                    shutil.move(os.path.dirname(fp), output_dir)
-                except:
-                    continue
-        return samples, dest_root
+                if "__MACOSX" not in fp:
+                    try:
+                        sample_name = re.findall(f'{DEST_ROOT}\/.*\/(.*)_AA_results$', fp)[0]
+                        samples.append(sample_name)
+                        print(os.path.dirname(fp))
+                        print(os.path.exists(os.path.dirname(fp)))
+                        os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
+                        # shutil.move(os.path.dirname(fp), output_dir)
+                    except:
+                        continue
         
     def aggregate_tables(self):
         """
         From the unzipped paths, start aggregating results
         This function will put together the separate AA runs into one run. 
-
-
         """
 
         output_head = ["Sample name", "AA amplicon number", "Feature ID", "Classification", "Location", "Oncogenes",
@@ -141,13 +130,16 @@ class Aggregator():
             for name in files:
                 if "_result_table.tsv" in name:
                     result_table_fp = os.path.join(root, name)
+                    print(result_table_fp)
+                    print(os.path.exists(result_table_fp))
                     try:
                         df = pd.read_csv(result_table_fp, delimiter = '\t')
                         aggregate = pd.concat([aggregate, df], ignore_index = True)
-                        runs[f'sample_{sample_num}'] = json.loads(df.to_json(orient = 'records'))
-                        sample_num += 1
                     except:
                         continue
+                    print(df)
+                    runs[f'sample_{sample_num}'] = json.loads(df.to_json(orient = 'records'))
+                    sample_num += 1
 
         ## output the table
         aggregate.to_csv('./results/aggregated_results.csv')
@@ -156,28 +148,11 @@ class Aggregator():
             json.dump({'runs': runs}, run_file)
         run_file.close()
 
-
-    def aggregate_json(self, json_files):
-        """
-        Aggregates json files from separate samples
-
-        """
-        out_dict = {'run' : {}}
-        sample_ct = 1
-        for fp in json_files:
-            sample_dict = json.load(open(fp))
-            out_dict['run'][f'sample_{sample_ct}'] = sample_dict
-            sample_ct += 1
-
-        with open('run.json', 'w') as out_json:
-            json.dump(out_dict, out_json)
-        out_json.close()
-
     def move_files(self):
         """
         Move files to correct location for output
         """
-        shutil.move(os.path.join('extracted_from_zips'))
+        shutil.move(DEST_ROOT, OUTPUT_PATH)
 
 
     def tardir(self, path, tar_name):
@@ -195,6 +170,7 @@ class Aggregator():
         Zips the aggregate results, and deletes files for cleanup
 
         """
+
         self.tardir('./results', f'{self.output_name}.tar.gz')
         shutil.rmtree('./results')
 
@@ -260,19 +236,12 @@ class Aggregator():
                         sample_dct[feature] = self.find_file(basename)
                     except Exception as e:
                         print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
+                        sample_dct[feature] = "Not Provided"
 
 
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file)
         json_file.close()
-
-    def absolute_to_relative_fp(fp, sample_name):
-        """
-        Converts an absolute file path to a relative file path
-        """
-
-        filename = os.path.basename(fp)
-        return f"AA_outputs/{sample_name}/{sample_name}_classification/"
 
 def validate():
     """

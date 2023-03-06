@@ -21,4 +21,4 @@ COPY src* /opt/genepatt
 
 ## for testing purposes
 RUN mkdir /opt/genepatt/gpunit
-COPY gpunit/* /opt/genepatt/gpunit
+

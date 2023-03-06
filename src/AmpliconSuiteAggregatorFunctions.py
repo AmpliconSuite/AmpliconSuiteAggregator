@@ -16,7 +16,7 @@ import subprocess
 import ast
 import zipfile
 
-
+OUTPUT_PATH = os.path.join('output', 'AA_output')
 
 class Aggregator():
     def __init__(self, filelist, root, output_name):
@@ -28,7 +28,7 @@ class Aggregator():
         self.aggregate_tables()
         self.json_modifications()
         # self.move_files()
-        # self.cleanup()
+        self.cleanup()
 
 
 
@@ -195,10 +195,28 @@ class Aggregator():
         Zips the aggregate results, and deletes files for cleanup
 
         """
-        self.tardir('results', f'{self.output_name}.tar.gz')
-        shutil.rmtree('results')
-        # shutil.rmtree('/opt/genepatt/extracted')
+        self.tardir('./output', f'{self.output_name}.tar.gz')
+        shutil.rmtree('./output')
 
+    def find_file(self, basename):
+        """
+        Finds a specific file given sample name and file suffix
+        """
+        for root, dirs, files in os.walk('./output/AA_outputs', topdown = True):
+            for file in files:
+                fp = os.path.join(root, file)
+                if basename == file:
+                    return fp.replace('./output/', "")
+        return 'Not Provided'
+    
+    def string_to_list(self, string):
+        """
+        Converts a string representation of a list to a list.
+        """
+        if "|" in string:
+            return string.split("|")
+        else:
+            return string.strip('][').replace("'", "").replace(" ", "").split(',')
 
     def json_modifications(self):
         """
@@ -213,65 +231,35 @@ class Aggregator():
         json_file.close()
 
         for sample in dct['runs'].keys():
-            ## String of list to list
-            for sample_num in range(len(dct['runs'][sample])):
-                try:
-                    sample_name = dct['runs'][sample][sample_num]['Sample name']
-
-                    locations = dct['runs'][sample][sample_num]['Location']
-                    if "|" in locations:
-                        dct['runs'][sample][sample_num]['Location'] = locations.split("|")
-                    else:
-                        dct['runs'][sample][sample_num]['Location'] = locations.strip('][').split(',')
-
-                    ## feature bed location relative path conversion
-                    feature_bed_loc = dct['runs'][sample][sample_num]['Feature BED file']
-                    # print(feature_bed_loc)
-                    basename = os.path.basename(feature_bed_loc)
-                    dct['runs'][sample][sample_num]['Feature BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/{sample_name}_classification_bed_files/{basename}"
-
-                    ## aa png file
-                    aa_png_location = dct['runs'][sample][sample_num]['AA PNG file']
-                    basename = os.path.basename(aa_png_location)
-                    dct['runs'][sample][sample_num]['AA PNG file'] = f"AA_outputs/{sample_name}/{sample_name}_AA_results/{basename}"
-
-                    ## aa pdf file
-                    aa_pdf_location = dct['runs'][sample][sample_num]['AA PDF file']
-                    basename = os.path.basename(aa_pdf_location)
-                    dct['runs'][sample][sample_num]['AA PDF file'] = f"AA_outputs/{sample_name}/{sample_name}_AA_results/{basename}"
-
-                    ## aa summary file
-                    aa_summary_location = dct['runs'][sample][sample_num]['AA summary file']
-                    basename = os.path.basename(aa_summary_location)
-                    dct['runs'][sample][sample_num]['AA summary file'] = f"AA_outputs/{sample_name}/{sample_name}_AA_results/{basename}"
+            for sample_dct in dct['runs'][sample]:
+                ## updating string of lists to lists
+                potential_str_lsts = [
+                    'Location',
+                    'Oncogenes',
+                    'All genes',
+                ]
+                for lists in potential_str_lsts:
+                    try:
+                        sample_dct[lists] = self.string_to_list(sample_dct[lists])
+                    except Exception as e:
+                        print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
 
 
-                    ## cnv bed file
-                    cnv_bed_location = dct['runs'][sample][sample_num]['CNV BED file']
-                    basename = os.path.basename(cnv_bed_location)
-                    dct['runs'][sample][sample_num]['CNV BED file'] = f"AA_outputs/{sample_name}/{sample_name}_classification/files/{basename}"
-
-                    ## run metadata json
-                    metadata_json_location = dct['runs'][sample][sample_num]['"Run metadata JSON"']
-                    basename = os.path.basename(metadata_json_location)
-                    dct['runs'][sample][sample_num]['AA PDF file'] = f"AA_outputs/{sample_name}/{basename}"
-
-
-
-                except Exception as e:
-                    print(e)
-
-                try:
-                    oncogenes = dct['runs'][sample][sample_num]['Oncogenes']
-                    if "|" in oncogenes:
-                        dct['runs'][sample][sample_num]['Oncogenes'] = oncogenes.split("|")
-                    else:
-                        dct['runs'][sample][sample_num]['Oncogenes'] = oncogenes.strip('][').split(',')
-
-                except:
-                    print(f"Oncogene for sample{sample_num} is None")
-
-
+                ## update each path in run.json by finding them in outputs folder
+                features_of_interest = [
+                    'Feature BED file', 
+                    'CNV BED file',
+                    'AA PNG file',
+                    'AA PDF file',
+                    'AA summary file',
+                    'Run metadata JSON',
+                ]
+                for feature in features_of_interest:
+                    try:
+                        basename = os.path.basename(sample_dct[feature])
+                        sample_dct[feature] = self.find_file(basename)
+                    except Exception as e:
+                        print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
 
 
         with open('./output/run.json', 'w') as json_file:
@@ -304,4 +292,4 @@ def validate():
 
     ## go through fields to see if each datatype is consistent
     ## and that paths exist
-    
+

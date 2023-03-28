@@ -118,10 +118,10 @@ class Aggregator():
         """
 
         output_head = ["Sample name", "AA amplicon number", "Feature ID", "Classification", "Location", "Oncogenes",
-                           "Complexity score",
-                           "Captured interval length", "Feature median copy number", "Feature maximum copy number",
-                           "Reference version", "Feature BED file", "CNV BED file", "AA PNG file", "AA PDF file",
-                           "Run metadata JSON"]
+                       "Complexity score", "Captured interval length", "Feature median copy number",
+                       "Feature maximum copy number", "Filter flag", "Reference version", "Tissue of origin",
+                       "Sample type", "Feature BED file", "CNV BED file", "AA PNG file", "AA PDF file", "AA summary file",
+                       "Run metadata JSON", "Sample metadata JSON"]
         aggregate = pd.DataFrame(columns = output_head)
         runs = {}
         sample_num = 1
@@ -135,11 +135,16 @@ class Aggregator():
                     try:
                         df = pd.read_csv(result_table_fp, delimiter = '\t')
                         aggregate = pd.concat([aggregate, df], ignore_index = True)
+
+                    # TODO: Can we write a more detailed error if an exception is generated from the try above?
                     except:
                         continue
-                    print(df)
-                    runs[f'sample_{sample_num}'] = json.loads(df.to_json(orient = 'records'))
-                    sample_num += 1
+
+                    # print(df)
+                    gdf = df.groupby(['Sample name'])
+                    for sname, group in gdf:
+                        runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
+                        sample_num += 1
 
         ## output the table
         aggregate.to_csv('./results/aggregated_results.csv')
@@ -183,6 +188,7 @@ class Aggregator():
                 fp = os.path.join(root, file)
                 if basename == file:
                     return fp.replace('./results/', "")
+
         return 'Not Provided'
     
     def string_to_list(self, string):
@@ -229,6 +235,7 @@ class Aggregator():
                     'AA PDF file',
                     'AA summary file',
                     'Run metadata JSON',
+                    'Sample metadata JSON'
                 ]
                 for feature in features_of_interest:
                     try:

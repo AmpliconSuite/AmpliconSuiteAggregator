@@ -260,6 +260,7 @@ class Aggregator():
                 for cbf in [x for x in cfiles if x.endswith("_classification_bed_files/") and not x.startswith("._")]:
                     feat_file = f'{self.sample_to_ac_location_dct[sample]}/{cbf}/{feat_basename}'
                     if os.path.exists(feat_file):
+                        feat_file = feat_file.replace('./results/', "")
                         sample_dct['Feature BED file'] = feat_file
                     else:
                         print(f'Feature: "Feature BED file" doesnt exist for sample: {sample_dct["Sample name"]}')
@@ -278,6 +279,7 @@ class Aggregator():
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
                         if os.path.exists(feat_file):
+                            feat_file = feat_file.replace('./results/', "")
                             sample_dct[feature] = feat_file
 
                         else:

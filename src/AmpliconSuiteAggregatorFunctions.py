@@ -153,7 +153,6 @@ class Aggregator():
                     if name.endswith("_result_table.tsv") and not name.startswith("._"):
                         result_table_fp = os.path.join(root, name)
                         print(result_table_fp)
-                        print(os.path.exists(result_table_fp))
                         try:
                             df = pd.read_csv(result_table_fp, delimiter = '\t')
                             aggregate = pd.concat([aggregate, df], ignore_index = True)
@@ -165,6 +164,7 @@ class Aggregator():
                         # print(df)
                         gdf = df.groupby(['Sample name'])
                         for sname, group in gdf:
+                            print(f'{sname} has {str(len(group))} rows')
                             runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
                             sample_to_ac_dir[f'sample_{sample_num}'] = os.path.dirname(result_table_fp)
                             sample_num += 1
@@ -257,14 +257,20 @@ class Aggregator():
                 # separately for feature bed file because location is different
                 feat_basename = os.path.basename(sample_dct['Feature BED file'])
                 cfiles = os.listdir(self.sample_to_ac_location_dct[sample])
-                for cbf in [x for x in cfiles if x.endswith("_classification_bed_files/") and not x.startswith("._")]:
+                cbf_hits = [x for x in cfiles if x.endswith("_classification_bed_files") and not x.startswith("._")]
+                if cbf_hits:
+                    cbf = cbf_hits[0]
                     feat_file = f'{self.sample_to_ac_location_dct[sample]}/{cbf}/{feat_basename}'
+                    # print("Feature BED file", feat_file)
                     if os.path.exists(feat_file):
                         feat_file = feat_file.replace('./results/', "")
                         sample_dct['Feature BED file'] = feat_file
                     else:
                         print(f'Feature: "Feature BED file" doesnt exist for sample: {sample_dct["Sample name"]}')
                         sample_dct['Feature BED file'] = "Not Provided"
+
+                else:
+                    sample_dct['Feature BED file'] = "Not Provided"
 
                 features_of_interest = [
                     'CNV BED file',
@@ -285,6 +291,9 @@ class Aggregator():
                         else:
                             print(f'Feature: "{feature}" doesnt exist for sample: {sample_dct["Sample name"]}')
                             sample_dct[feature] = "Not Provided"
+
+                    else:
+                        sample_dct[feature] = "Not Provided"
 
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file)

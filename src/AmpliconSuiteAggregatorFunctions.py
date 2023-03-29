@@ -55,20 +55,25 @@ class Aggregator():
         unzips file based on zip type
         """
         try:
-            if ".tar.gz" in fp:
+            if fp.endswith(".tar.gz"):
                 zip_name = os.path.basename(fp).replace(".tar.gz", "")
                 destination = f'{dest_root}/{zip_name}'
                 with tarfile.open(fp, 'r') as output_zip:
                     output_zip.extractall(destination)
                 output_zip.close()
-            elif ".zip" in fp:
+            elif fp.endswith(".zip"):
                     zip_name = os.path.basename(fp).replace(".zip", "")
                     destination = f'{dest_root}/{zip_name}'
                     with zipfile.ZipFile(fp, 'r') as zip_ref:
                         zip_ref.extractall(destination)
                     zip_ref.close()
-        except:
-            print(f'No need to extract: {fp}/{dest_root}')
+
+            else:
+                print(f'No need to extract: {fp}/{dest_root}')
+
+        except Exception as e:
+            print(e)
+
 
     def unzip(self):
         """

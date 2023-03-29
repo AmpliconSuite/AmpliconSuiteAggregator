@@ -18,6 +18,7 @@ import zipfile
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
+OTHER_FILES = os.path.join("./results/other_files")
 
 class Aggregator():
     def __init__(self, filelist, root, output_name):
@@ -26,7 +27,7 @@ class Aggregator():
         self.output_name = output_name
         self.get_zip_paths()
         self.unzip()
-        self.aggregate_tables()
+        self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
         self.cleanup()
@@ -54,26 +55,30 @@ class Aggregator():
         unzips file based on zip type
         """
         try:
-            if ".tar.gz" in fp:
+            if fp.endswith(".tar.gz"):
                 zip_name = os.path.basename(fp).replace(".tar.gz", "")
                 destination = f'{dest_root}/{zip_name}'
                 with tarfile.open(fp, 'r') as output_zip:
                     output_zip.extractall(destination)
                 output_zip.close()
-            elif ".zip" in fp:
+            elif fp.endswith(".zip"):
                     zip_name = os.path.basename(fp).replace(".zip", "")
                     destination = f'{dest_root}/{zip_name}'
                     with zipfile.ZipFile(fp, 'r') as zip_ref:
                         zip_ref.extractall(destination)
                     zip_ref.close()
-        except:
-            print(f'No need to extract: {fp}/{dest_root}')
+
+            # else:
+            #     print(f'No need to extract: {fp}')
+
+        except Exception as e:
+            print(e)
+
 
     def unzip(self):
         """
         Unzips the zip files, and get directories for files within
 
-        returns -- a list of samples, root directory of where the files are located.
         """
 
         for zip_fp in self.zip_paths:
@@ -95,22 +100,37 @@ class Aggregator():
         if not os.path.exists(OUTPUT_PATH):
             os.makedirs(OUTPUT_PATH)
 
+        if not os.path.exists(OTHER_FILES):
+            os.makedirs(OTHER_FILES)
+
         ## find samples and move files
-        samples = []
+        # samples = []
         for root, dirs, files in os.walk(DEST_ROOT, topdown = True):
             for dir in dirs: 
                 fp = os.path.join(root, dir)
-                if "__MACOSX" not in fp:
-                    try:
-                        sample_name = re.findall(f'{DEST_ROOT}\/.*\/(.*)_AA_results$', fp)[0]
-                        samples.append(sample_name)
-                        print(os.path.dirname(fp))
-                        print(os.path.exists(os.path.dirname(fp)))
+                if "__MACOSX" in fp or "DS_Store" in fp or not os.path.exists(fp):
+                    continue
+
+                if fp.endswith("_AA_results"):
+                    if any([x.endswith("_summary.txt") for x in os.listdir(fp)]):
                         os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
-                        # shutil.move(os.path.dirname(fp), output_dir)
-                    except:
-                        continue
-        
+
+                elif any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
+                    pre = fp.rstrip("_classification")
+                    if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
+                        print(f'Moving file {fp} to {OTHER_FILES}')
+                        os.system(f'mv -vf {fp} {OTHER_FILES}')
+
+                    # try: # check if this is an AA outputs folder
+                    #     sample_name = re.findall(f'{DEST_ROOT}\/.*\/(.*)_AA_results$', fp)[0]
+                    #     samples.append(sample_name)
+                    #     print(os.path.dirname(fp))
+                    #     print(os.path.exists(os.path.dirname(fp)))
+                    #     os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
+                    #     # shutil.move(os.path.dirname(fp), output_dir)
+                    # except:
+                    #     continue
+
     def aggregate_tables(self):
         """
         From the unzipped paths, start aggregating results
@@ -124,34 +144,40 @@ class Aggregator():
                        "Run metadata JSON", "Sample metadata JSON"]
         aggregate = pd.DataFrame(columns = output_head)
         runs = {}
+        sample_to_ac_dir = {}
         sample_num = 1
         # aggregate results
-        for root, dirs, files in os.walk("./results/AA_outputs", topdown = False):
-            for name in files:
-                if "_result_table.tsv" in name:
-                    result_table_fp = os.path.join(root, name)
-                    print(result_table_fp)
-                    print(os.path.exists(result_table_fp))
-                    try:
-                        df = pd.read_csv(result_table_fp, delimiter = '\t')
-                        aggregate = pd.concat([aggregate, df], ignore_index = True)
+        for res_dir in [OUTPUT_PATH, OTHER_FILES]:
+            for root, dirs, files in os.walk(res_dir, topdown = False):
+                for name in files:
+                    if name.endswith("_result_table.tsv") and not name.startswith("._"):
+                        result_table_fp = os.path.join(root, name)
+                        print(result_table_fp)
+                        print(os.path.exists(result_table_fp))
+                        try:
+                            df = pd.read_csv(result_table_fp, delimiter = '\t')
+                            aggregate = pd.concat([aggregate, df], ignore_index = True)
 
-                    # TODO: Can we write a more detailed error if an exception is generated from the try above?
-                    except:
-                        continue
+                        except Exception as e:
+                            print(e)
+                            continue
 
-                    # print(df)
-                    gdf = df.groupby(['Sample name'])
-                    for sname, group in gdf:
-                        runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
-                        sample_num += 1
+                        # print(df)
+                        gdf = df.groupby(['Sample name'])
+                        for sname, group in gdf:
+                            runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
+                            sample_to_ac_dir[f'sample_{sample_num}'] = os.path.dirname(result_table_fp)
+                            sample_num += 1
 
         ## output the table
         aggregate.to_csv('./results/aggregated_results.csv')
         aggregate.to_html('./results/aggregated_results.html')
         with open('./results/run.json', 'w') as run_file:
             json.dump({'runs': runs}, run_file)
+
         run_file.close()
+        return sample_to_ac_dir
+
 
     def move_files(self):
         """
@@ -206,7 +232,7 @@ class Aggregator():
 
         Modifications include:
         1. correcting string of list
-        2. abslute pathing to relative pathing
+        2. absolute pathing to relative pathing
         """
         with open('./results/run.json') as json_file:
             dct = json.load(json_file)
@@ -214,7 +240,8 @@ class Aggregator():
 
         for sample in dct['runs'].keys():
             for sample_dct in dct['runs'][sample]:
-                ## updating string of lists to lists
+                # updating string of lists to lists
+                sample_name = sample_dct["Sample name"]
                 potential_str_lsts = [
                     'Location',
                     'Oncogenes',
@@ -223,13 +250,22 @@ class Aggregator():
                 for lists in potential_str_lsts:
                     try:
                         sample_dct[lists] = self.string_to_list(sample_dct[lists])
-                    except Exception as e:
-                        print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
+                    except:
+                        print(f'Feature: {lists} doesnt exist for sample: {sample_name}')
 
+                # update each path in run.json by finding them in outputs folder
+                # separately for feature bed file because location is different
+                feat_basename = os.path.basename(sample_dct['Feature BED file'])
+                cfiles = os.listdir(self.sample_to_ac_location_dct[sample])
+                for cbf in [x for x in cfiles if x.endswith("_classification_bed_files/") and not x.startswith("._")]:
+                    feat_file = f'{self.sample_to_ac_location_dct[sample]}/{cbf}/{feat_basename}'
+                    if os.path.exists(feat_file):
+                        sample_dct['Feature BED file'] = feat_file
+                    else:
+                        print(f'Feature: "Feature BED file" doesnt exist for sample: {sample_dct["Sample name"]}')
+                        sample_dct['Feature BED file'] = "Not Provided"
 
-                ## update each path in run.json by finding them in outputs folder
                 features_of_interest = [
-                    'Feature BED file', 
                     'CNV BED file',
                     'AA PNG file',
                     'AA PDF file',
@@ -238,18 +274,21 @@ class Aggregator():
                     'Sample metadata JSON'
                 ]
                 for feature in features_of_interest:
-                    try:
-                        basename = os.path.basename(sample_dct[feature])
-                        sample_dct[feature] = self.find_file(basename)
-                    except Exception as e:
-                        print(f'Feature: {e} doesnt exist for sample: {sample_dct["Sample name"]}')
-                        sample_dct[feature] = "Not Provided"
+                    if sample_dct[feature]:
+                        feat_basename = os.path.basename(sample_dct[feature])
+                        feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
+                        if os.path.exists(feat_file):
+                            sample_dct[feature] = feat_file
 
+                        else:
+                            print(f'Feature: "{feature}" doesnt exist for sample: {sample_dct["Sample name"]}')
+                            sample_dct[feature] = "Not Provided"
 
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file)
         json_file.close()
 
+# TODO: VALIDATE IS NEVER USED!
 def validate():
     """
     Validates that all of the file locations exist. 
@@ -266,6 +305,6 @@ def validate():
         dct = json.load(json_file)
     json_file.close()
 
-    ## go through fields to see if each datatype is consistent
+    ## TODO: go through fields to see if each datatype is consistent
     ## and that paths exist
 

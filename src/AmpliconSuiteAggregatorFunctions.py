@@ -68,8 +68,8 @@ class Aggregator():
                         zip_ref.extractall(destination)
                     zip_ref.close()
 
-            else:
-                print(f'No need to extract: {fp}/{dest_root}')
+            # else:
+            #     print(f'No need to extract: {fp}')
 
         except Exception as e:
             print(e)
@@ -116,7 +116,10 @@ class Aggregator():
                         os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
                 elif any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
-                    os.system(f'mv -vf {fp} {OTHER_FILES}')
+                    pre = fp.rstrip("_classification")
+                    if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
+                        print(f'Moving file {fp} to {OTHER_FILES}')
+                        os.system(f'mv -vf {fp} {OTHER_FILES}')
 
                     # try: # check if this is an AA outputs folder
                     #     sample_name = re.findall(f'{DEST_ROOT}\/.*\/(.*)_AA_results$', fp)[0]

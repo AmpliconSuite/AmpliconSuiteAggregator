@@ -20,35 +20,17 @@ DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 
+
 class Aggregator():
     def __init__(self, filelist, root, output_name):
-        self.filelist_fp = filelist
+        self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
-        self.get_zip_paths()
         self.unzip()
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
         self.cleanup()
-
-
-
-    def get_zip_paths(self):
-        """
-        Gets the individual file paths from the list of zip filepaths
-
-        calls from self
-        returns --> a list of filepaths to zip files
-        """
-        files = []
-        with open(self.filelist_fp, 'r') as filelist:
-            for line in filelist:
-                parsed = line.strip()
-                files.append(parsed)
-        filelist.close()
-        self.zip_paths = files
-        return files
 
     def unzip_file(self, fp, dest_root):
         """
@@ -302,9 +284,7 @@ class Aggregator():
 # TODO: VALIDATE IS NEVER USED!
 def validate():
     """
-    Validates that all of the file locations exist. 
-
-    
+    Validates that all of the file locations exist.
     """
     ## check that everything is in the right place
     if os.path.exists('./output'):

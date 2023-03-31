@@ -281,7 +281,7 @@ class Aggregator():
                     'Sample metadata JSON'
                 ]
                 for feature in features_of_interest:
-                    if sample_dct[feature]:
+                    if feature in sample_dct and sample_dct[feature]:
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
                         if os.path.exists(feat_file):
@@ -296,7 +296,7 @@ class Aggregator():
                         sample_dct[feature] = "Not Provided"
 
         with open('./results/run.json', 'w') as json_file:
-            json.dump(dct, json_file)
+            json.dump(dct, json_file, sort_keys=True, indent=2)
         json_file.close()
 
 # TODO: VALIDATE IS NEVER USED!

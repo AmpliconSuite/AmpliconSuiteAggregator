@@ -15,40 +15,26 @@ import json
 import subprocess
 import ast
 import zipfile
+from collections import defaultdict
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 
+
 class Aggregator():
     def __init__(self, filelist, root, output_name):
-        self.filelist_fp = filelist
+        self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
-        self.get_zip_paths()
         self.unzip()
+        self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
+        self.locate_dirs()
+        print(self.samp_ckit_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
         self.cleanup()
-
-
-
-    def get_zip_paths(self):
-        """
-        Gets the individual file paths from the list of zip filepaths
-
-        calls from self
-        returns --> a list of filepaths to zip files
-        """
-        files = []
-        with open(self.filelist_fp, 'r') as filelist:
-            for line in filelist:
-                parsed = line.strip()
-                files.append(parsed)
-        filelist.close()
-        self.zip_paths = files
-        return files
 
     def unzip_file(self, fp, dest_root):
         """
@@ -117,6 +103,7 @@ class Aggregator():
 
                 elif any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
                     pre = fp.rstrip("_classification")
+                    # don't need to move things that will get brought already into AA_outputs
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
                         print(f'Moving file {fp} to {OTHER_FILES}')
                         os.system(f'mv -vf {fp} {OTHER_FILES}')
@@ -130,6 +117,22 @@ class Aggregator():
                     #     # shutil.move(os.path.dirname(fp), output_dir)
                     # except:
                     #     continue
+
+    def locate_dirs(self):
+        # post-move identification of AA and CNVKit files:
+        for root, dirs, files in os.walk(OUTPUT_PATH, topdown = True):
+            for dir in dirs:
+                fp = os.path.join(root, dir)
+                if not os.path.exists(fp):
+                    continue
+
+                if fp.endswith("_AA_results"):
+                    implied_sname = fp.rstrip("_AA_results").rsplit("/")[-1]
+                    self.samp_AA_dct[implied_sname] = fp
+
+                elif fp.endswith("_cnvkit_output"):
+                    implied_sname = fp.rstrip("_cnvkit_output").rsplit("/")[-1]
+                    self.samp_ckit_dct[implied_sname] = fp
 
     def aggregate_tables(self):
         """
@@ -152,7 +155,6 @@ class Aggregator():
                 for name in files:
                     if name.endswith("_result_table.tsv") and not name.startswith("._"):
                         result_table_fp = os.path.join(root, name)
-                        print(result_table_fp)
                         try:
                             df = pd.read_csv(result_table_fp, delimiter = '\t')
                             aggregate = pd.concat([aggregate, df], ignore_index = True)
@@ -162,7 +164,7 @@ class Aggregator():
                             continue
 
                         # print(df)
-                        gdf = df.groupby(['Sample name'])
+                        gdf = df.groupby('Sample name')
                         for sname, group in gdf:
                             print(f'{sname} has {str(len(group))} rows')
                             runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
@@ -205,17 +207,17 @@ class Aggregator():
         self.tardir('./results', f'{self.output_name}.tar.gz')
         shutil.rmtree('./results')
 
-    def find_file(self, basename):
-        """
-        Finds a specific file given sample name and file suffix
-        """
-        for root, dirs, files in os.walk('./results/AA_outputs', topdown = True):
-            for file in files:
-                fp = os.path.join(root, file)
-                if basename == file:
-                    return fp.replace('./results/', "")
-
-        return 'Not Provided'
+    # def find_file(self, basename):
+    #     """
+    #     Finds a specific file given sample name and file suffix
+    #     """
+    #     for root, dirs, files in os.walk('./results/AA_outputs', topdown = True):
+    #         for file in files:
+    #             fp = os.path.join(root, file)
+    #             if basename == file:
+    #                 return fp.replace('./results/', "")
+    #
+    #     return 'Not Provided'
     
     def string_to_list(self, string):
         """
@@ -225,6 +227,9 @@ class Aggregator():
             return string.split("|")
         else:
             return string.strip('][').replace(" ", "").split(',')
+
+    def attempt_CN_file_identification(self):
+        pass
 
     def json_modifications(self):
         """
@@ -278,33 +283,49 @@ class Aggregator():
                     'AA PDF file',
                     'AA summary file',
                     'Run metadata JSON',
-                    'Sample metadata JSON'
+                    'Sample metadata JSON',
                 ]
                 for feature in features_of_interest:
-                    if sample_dct[feature]:
+                    if feature in sample_dct and sample_dct[feature]:
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
+                        if feature == "CNV BED file" and any([feat_file.endswith(x) for x in ["AA_CNV_SEEDS.bed", "CNV_CALLS_pre_filtered.bed"]]):
+                            cnvkit_dir = self.samp_ckit_dct[sample_dct['Sample name']]
+                            if cnvkit_dir:
+                                for f in os.listdir(cnvkit_dir):
+                                    if f.endswith("CNV_CALLS.bed"):
+                                        feat_file = cnvkit_dir + "/" + f
+
                         if os.path.exists(feat_file):
                             feat_file = feat_file.replace('./results/', "")
                             sample_dct[feature] = feat_file
 
                         else:
-                            print(f'Feature: "{feature}" doesnt exist for sample: {sample_dct["Sample name"]}')
+                            print(f'Feature: "{feature}" doesn\'t exist for sample: {sample_dct["Sample name"]}')
                             sample_dct[feature] = "Not Provided"
 
                     else:
                         sample_dct[feature] = "Not Provided"
 
+                dirs_of_interest = [
+                    'AA directory',
+                    'cnvkit directory'
+                ]
+                for dirfname, sdct in zip(dirs_of_interest, [self.samp_AA_dct, self.samp_ckit_dct]):
+                    if sdct[sample_dct['Sample name']]:
+                        sample_dct[dirfname] = sdct[sample_dct['Sample name']].replace('./results/', "")
+
+                    else:
+                        sample_dct[dirfname] = "Not Provided"
+
         with open('./results/run.json', 'w') as json_file:
-            json.dump(dct, json_file)
+            json.dump(dct, json_file, sort_keys=True, indent=2)
         json_file.close()
 
 # TODO: VALIDATE IS NEVER USED!
 def validate():
     """
-    Validates that all of the file locations exist. 
-
-    
+    Validates that all of the file locations exist.
     """
     ## check that everything is in the right place
     if os.path.exists('./output'):

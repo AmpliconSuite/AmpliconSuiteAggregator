@@ -30,7 +30,6 @@ class Aggregator():
         self.unzip()
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.locate_dirs()
-        print(self.samp_ckit_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
@@ -243,10 +242,18 @@ class Aggregator():
             dct = json.load(json_file)
         json_file.close()
 
+        ref_genomes = set()
         for sample in dct['runs'].keys():
             for sample_dct in dct['runs'][sample]:
                 # updating string of lists to lists
                 sample_name = sample_dct["Sample name"]
+                ref_genomes.add(sample_dct["Reference version"])
+                if len(ref_genomes) > 1:
+                    sys.stderr.write(str(ref_genomes) + "\n")
+                    sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
+                                     "supports single-reference projects currently. Exiting.")
+                    sys.exit(1)
+
                 potential_str_lsts = [
                     'Location',
                     'Oncogenes',

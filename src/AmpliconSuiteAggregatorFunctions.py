@@ -29,7 +29,9 @@ class Aggregator():
         self.output_name = output_name
         self.unzip()
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
-        self.locate_dirs()
+        self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
+        self.locate_dirs_and_metadata_jsons()
+        # print(self.samp_ckit_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
@@ -117,7 +119,7 @@ class Aggregator():
                     # except:
                     #     continue
 
-    def locate_dirs(self):
+    def locate_dirs_and_metadata_jsons(self):
         # post-move identification of AA and CNVKit files:
         for root, dirs, files in os.walk(OUTPUT_PATH, topdown = True):
             for dir in dirs:
@@ -132,6 +134,15 @@ class Aggregator():
                 elif fp.endswith("_cnvkit_output"):
                     implied_sname = fp.rstrip("_cnvkit_output").rsplit("/")[-1]
                     self.samp_ckit_dct[implied_sname] = fp
+
+                for f in os.listdir(fp):
+                    if f.endswith("_run_metadata.json"):
+                        implied_sname = f.rstrip("_run_metadata.json")
+                        self.run_mdata_dct[implied_sname] = fp + "/" + f
+
+                    elif f.endswith("_sample_metadata.json"):
+                        implied_sname = f.rstrip("_sample_metadata.json")
+                        self.samp_mdata_dct[implied_sname] = fp + "/" + f
 
     def aggregate_tables(self):
         """
@@ -202,7 +213,8 @@ class Aggregator():
         Zips the aggregate results, and deletes files for cleanup
 
         """
-
+        self.clean_cnr_gzs()
+        print("Creating tar.gz...")
         self.tardir('./results', f'{self.output_name}.tar.gz')
         shutil.rmtree('./results')
 
@@ -296,12 +308,22 @@ class Aggregator():
                     if feature in sample_dct and sample_dct[feature]:
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
-                        if feature == "CNV BED file" and any([feat_file.endswith(x) for x in ["AA_CNV_SEEDS.bed", "CNV_CALLS_pre_filtered.bed"]]):
+                        if feature == "CNV BED file" and any([feat_file.endswith(x) for x in ["AA_CNV_SEEDS.bed", "CNV_CALLS_pre_filtered.bed", "Not provided", "Not Provided"]]):
                             cnvkit_dir = self.samp_ckit_dct[sample_dct['Sample name']]
                             if cnvkit_dir:
                                 for f in os.listdir(cnvkit_dir):
-                                    if f.endswith("CNV_CALLS.bed"):
+                                    if f.endswith("_CNV_CALLS.bed"):
                                         feat_file = cnvkit_dir + "/" + f
+
+                        elif feature == "Run metadata JSON" and any([feat_file.endswith(x) for x in ["Not provided", "Not Provided"]]):
+                            rmj = self.run_mdata_dct[sample_dct['Sample name']]
+                            if rmj:
+                                feat_file = rmj
+
+                        elif feature == "Sample metadata JSON" and any([feat_file.endswith(x) for x in ["Not provided", "Not Provided"]]):
+                            smj = self.samp_mdata_dct[sample_dct['Sample name']]
+                            if smj:
+                                feat_file = smj
 
                         if os.path.exists(feat_file):
                             feat_file = feat_file.replace('./results/', "")
@@ -328,6 +350,14 @@ class Aggregator():
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file, sort_keys=True, indent=2)
         json_file.close()
+
+
+    def clean_cnr_gzs(self):
+        print("Removing raw copy number cnr.gz files to save space.")
+        cmd = f'find {OUTPUT_PATH} -name "*.cnr.gz" -exec rm {{}} \;'
+        print(cmd)
+        subprocess.call(cmd, shell=True)
+
 
 # TODO: VALIDATE IS NEVER USED!
 def validate():

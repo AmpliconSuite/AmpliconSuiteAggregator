@@ -21,7 +21,7 @@ def get_zip_paths(filelist_fp):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-flist", "--filelist", type=str, help="List of files or directories to use")
+    group.add_argument("-flist", "--filelist", type=str, help="Text file with files to use (one per line)")
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
 

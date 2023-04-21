@@ -107,7 +107,7 @@ class Aggregator():
                     # self.tardir(os.path.dirname(fp), tarname)
                     os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
-                elif any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
+                if os.path.exists(fp) and any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
                     pre = fp.rstrip("_classification")
                     # don't need to move things that will get brought already into AA_outputs
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
@@ -128,7 +128,6 @@ class Aggregator():
         # post-move identification of AA and CNVKit files:
         for root, dirs, files in os.walk(OUTPUT_PATH, topdown = True):
             for dir in dirs:
-                print(dir)
                 fp = os.path.join(root, dir)
                 if not os.path.exists(fp):
                     continue
@@ -345,12 +344,11 @@ class Aggregator():
                 ]
                 for dirfname, sdct in zip(dirs_of_interest, [self.samp_AA_dct, self.samp_ckit_dct]):
                     if sdct[sample_dct['Sample name']]:
-                        print("prior", sdct[sample_dct['Sample name']])
                         orig_dir = sdct[sample_dct['Sample name']]
                         tarf = orig_dir + ".tar.gz"
                         self.tardir(orig_dir, tarf)
                         sample_dct[dirfname] = tarf.replace('./results/', "")
-                        print("post", sample_dct[dirfname])
+
 
                     else:
                         sample_dct[dirfname] = "Not Provided"

@@ -31,7 +31,8 @@ class Aggregator():
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
-        # print(self.samp_ckit_dct)
+        print(self.samp_ckit_dct)
+        print(self.samp_AA_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
@@ -60,7 +61,6 @@ class Aggregator():
 
         except Exception as e:
             print(e)
-
 
     def unzip(self):
         """
@@ -102,7 +102,12 @@ class Aggregator():
                     if any([x.endswith("_summary.txt") for x in os.listdir(fp)]):
                         os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
-                elif any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
+                if fp.endswith("_cnvkit_output"):
+                    # tarname = os.path.dirname(fp) + ".tar.gz"
+                    # self.tardir(os.path.dirname(fp), tarname)
+                    os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
+
+                if os.path.exists(fp) and any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
                     pre = fp.rstrip("_classification")
                     # don't need to move things that will get brought already into AA_outputs
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
@@ -190,13 +195,11 @@ class Aggregator():
         run_file.close()
         return sample_to_ac_dir
 
-
     def move_files(self):
         """
         Move files to correct location for output
         """
         shutil.move(DEST_ROOT, OUTPUT_PATH)
-
 
     def tardir(self, path, tar_name):
         """
@@ -214,6 +217,8 @@ class Aggregator():
 
         """
         self.clean_cnr_gzs()
+        self.clean_files(self.samp_AA_dct.values())
+        self.clean_files(self.samp_ckit_dct.values())
         print("Creating tar.gz...")
         self.tardir('./results', f'{self.output_name}.tar.gz')
         shutil.rmtree('./results')
@@ -238,9 +243,6 @@ class Aggregator():
             return string.split("|")
         else:
             return string.strip('][').replace(" ", "").split(',')
-
-    def attempt_CN_file_identification(self):
-        pass
 
     def json_modifications(self):
         """
@@ -342,7 +344,11 @@ class Aggregator():
                 ]
                 for dirfname, sdct in zip(dirs_of_interest, [self.samp_AA_dct, self.samp_ckit_dct]):
                     if sdct[sample_dct['Sample name']]:
-                        sample_dct[dirfname] = sdct[sample_dct['Sample name']].replace('./results/', "")
+                        orig_dir = sdct[sample_dct['Sample name']]
+                        tarf = orig_dir + ".tar.gz"
+                        self.tardir(orig_dir, tarf)
+                        sample_dct[dirfname] = tarf.replace('./results/', "")
+
 
                     else:
                         sample_dct[dirfname] = "Not Provided"
@@ -357,6 +363,13 @@ class Aggregator():
         cmd = f'find {OUTPUT_PATH} -name "*.cnr.gz" -exec rm {{}} \;'
         print(cmd)
         subprocess.call(cmd, shell=True)
+
+
+    def clean_files(self, flist):
+        for f in flist:
+            if not f == "/":
+                cmd = f'rm -rf {f}'
+                subprocess.call(cmd, shell=True)
 
 
 # TODO: VALIDATE IS NEVER USED!

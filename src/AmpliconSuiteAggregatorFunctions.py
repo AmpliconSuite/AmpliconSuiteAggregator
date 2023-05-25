@@ -31,8 +31,8 @@ class Aggregator():
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
-        print(self.samp_ckit_dct)
-        print(self.samp_AA_dct)
+        # print(self.samp_ckit_dct)
+        # print(self.samp_AA_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
@@ -292,7 +292,7 @@ class Aggregator():
                         feat_file = feat_file.replace('./results/', "")
                         sample_dct['Feature BED file'] = feat_file
                     else:
-                        print(f'Feature: "Feature BED file" doesnt exist for sample: {sample_dct["Sample name"]}')
+                        print(f'Feature: "Feature BED file" {feat_file} doesnt exist for sample {sample_dct["Sample name"]}')
                         sample_dct['Feature BED file'] = "Not Provided"
 
                 else:

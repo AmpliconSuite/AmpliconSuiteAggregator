@@ -1,5 +1,6 @@
 from AmpliconSuiteAggregatorFunctions import *
 
+__version__ = "1.6"
 
 def get_zip_paths(filelist_fp):
     """
@@ -24,6 +25,7 @@ if __name__ == "__main__":
     group.add_argument("-flist", "--filelist", type=str, help="Text file with files to use (one per line)")
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
+    parser.add_argument("-v", "--version", action='version', version=__version__)
 
     args = parser.parse_args()
 
@@ -34,4 +36,5 @@ if __name__ == "__main__":
         filelist = args.files
 
     root = '.'
+    print("AmpliconSuiteAggregator version " + __version__)
     aggregate = Aggregator(filelist, root, args.output_name)

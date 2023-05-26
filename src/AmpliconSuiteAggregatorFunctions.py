@@ -43,7 +43,7 @@ class Aggregator():
         # print(self.run_mdata_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
-        self.move_files()
+        # self.move_files()
         self.cleanup()
 
     def unzip_file(self, fp, dest_root):
@@ -202,11 +202,11 @@ class Aggregator():
         run_file.close()
         return sample_to_ac_dir
 
-    def move_files(self):
-        """
-        Move files to correct location for output
-        """
-        shutil.move(DEST_ROOT, OUTPUT_PATH)
+    # def move_files(self):
+    #     """
+    #     Move files to correct location for output
+    #     """
+    #     shutil.move(DEST_ROOT, OUTPUT_PATH)
 
     def tardir(self, path, tar_name):
         """
@@ -221,14 +221,12 @@ class Aggregator():
     def cleanup(self):
         """
         Zips the aggregate results, and deletes files for cleanup
-
         """
-        self.clean_cnr_gzs()
-        self.clean_files(self.samp_AA_dct.values())
-        self.clean_files(self.samp_ckit_dct.values())
+        self.clean_dirs(self.samp_AA_dct.values())
+        # self.clean_files(self.samp_ckit_dct.values())
         print("Creating tar.gz...")
         self.tardir('./results', f'{self.output_name}.tar.gz')
-        shutil.rmtree('./results')
+        self.clean_dirs(['./results', DEST_ROOT]) # ./extracted_from_zips
 
     # def find_file(self, basename):
     #     """
@@ -352,6 +350,14 @@ class Aggregator():
                 for dirfname, sdct in zip(dirs_of_interest, [self.samp_AA_dct, self.samp_ckit_dct]):
                     if sdct[sample_dct['Sample name']]:
                         orig_dir = sdct[sample_dct['Sample name']]
+                        # clean .out and .cnr.gz files
+                        self.clean_by_suffix("*.out", orig_dir)
+                        self.clean_by_suffix("*.cnr.gz", orig_dir)
+
+                        # compress .cns file
+                        cmd = f'gzip -fq {orig_dir}/*.cns 2> /dev/null'
+                        subprocess.call(cmd, shell=True)
+
                         tarf = orig_dir + ".tar.gz"
                         self.tardir(orig_dir, tarf)
                         sample_dct[dirfname] = tarf.replace('./results/', "")
@@ -372,19 +378,21 @@ class Aggregator():
         aggregate.to_html('./results/aggregated_results.html')
 
 
-    def clean_cnr_gzs(self):
-        print("Removing raw copy number cnr.gz files to save space.")
-        cmd = f'find {OUTPUT_PATH} -name "*.cnr.gz" -exec rm {{}} \;'
-        print(cmd)
-        subprocess.call(cmd, shell=True)
+    def clean_by_suffix(self, suffix, dir):
+        if suffix and dir and not dir == "/" and not suffix == "*":
+            cmd = f'rm -f {dir}/{suffix}'
+            # try:
+            subprocess.call(cmd, shell=True)
+            # except FileNotFoundError:
+            #     pass
 
-
-    def clean_files(self, flist):
-        for f in flist:
-            if not f == "/":
-                cmd = f'rm -rf {f}'
-                subprocess.call(cmd, shell=True)
-                subprocess.call(cmd, shell=True)
+    def clean_dirs(self, dlist):
+        for d in dlist:
+            if d and not d == "/":
+                shutil.rmtree(d)
+                #cmd = f'rm -rf {f}'
+                #print(cmd)
+                #subprocess.call(cmd)
 
 
 # TODO: VALIDATE IS NEVER USED!

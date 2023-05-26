@@ -22,6 +22,12 @@ OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 
 
+def rchop(s, suffix):
+    if suffix and s.endswith(suffix):
+        return s[:-len(suffix)]
+    return s
+
+
 class Aggregator():
     def __init__(self, filelist, root, output_name):
         self.zip_paths = filelist
@@ -33,6 +39,8 @@ class Aggregator():
         self.locate_dirs_and_metadata_jsons()
         # print(self.samp_ckit_dct)
         # print(self.samp_AA_dct)
+        # print(self.samp_mdata_dct)
+        # print(self.run_mdata_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
         self.move_files()
@@ -133,20 +141,21 @@ class Aggregator():
                     continue
 
                 if fp.endswith("_AA_results"):
-                    implied_sname = fp.rstrip("_AA_results").rsplit("/")[-1]
+                    implied_sname = rchop(fp,"_AA_results").rsplit("/")[-1]
                     self.samp_AA_dct[implied_sname] = fp
 
                 elif fp.endswith("_cnvkit_output"):
-                    implied_sname = fp.rstrip("_cnvkit_output").rsplit("/")[-1]
+                    implied_sname = rchop(fp,"_cnvkit_output").rsplit("/")[-1]
+                    print(fp.rstrip("_cnvkit_output"), implied_sname)
                     self.samp_ckit_dct[implied_sname] = fp
 
                 for f in os.listdir(fp):
                     if f.endswith("_run_metadata.json"):
-                        implied_sname = f.rstrip("_run_metadata.json")
+                        implied_sname = rchop(f, "_run_metadata.json")
                         self.run_mdata_dct[implied_sname] = fp + "/" + f
 
                     elif f.endswith("_sample_metadata.json"):
-                        implied_sname = f.rstrip("_sample_metadata.json")
+                        implied_sname = rchop(f, "_sample_metadata.json")
                         self.samp_mdata_dct[implied_sname] = fp + "/" + f
 
     def aggregate_tables(self):
@@ -187,8 +196,6 @@ class Aggregator():
                             sample_num += 1
 
         ## output the table
-        aggregate.to_csv('./results/aggregated_results.csv')
-        aggregate.to_html('./results/aggregated_results.html')
         with open('./results/run.json', 'w') as run_file:
             json.dump({'runs': runs}, run_file)
 
@@ -332,7 +339,7 @@ class Aggregator():
                             sample_dct[feature] = feat_file
 
                         else:
-                            print(f'Feature: "{feature}" doesn\'t exist for sample: {sample_dct["Sample name"]}')
+                            print(f'Feature: "{feature}" file doesn\'t exist for sample {sample_dct["Sample name"]}: {feat_file}')
                             sample_dct[feature] = "Not Provided"
 
                     else:
@@ -349,13 +356,20 @@ class Aggregator():
                         self.tardir(orig_dir, tarf)
                         sample_dct[dirfname] = tarf.replace('./results/', "")
 
-
                     else:
                         sample_dct[dirfname] = "Not Provided"
 
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file, sort_keys=True, indent=2)
         json_file.close()
+
+        flattened_samples = []
+        for _,v in dct['runs'].items():
+            flattened_samples.extend(v)
+
+        aggregate = pd.DataFrame.from_records(flattened_samples)
+        aggregate.to_csv('./results/aggregated_results.csv')
+        aggregate.to_html('./results/aggregated_results.html')
 
 
     def clean_cnr_gzs(self):
@@ -369,6 +383,7 @@ class Aggregator():
         for f in flist:
             if not f == "/":
                 cmd = f'rm -rf {f}'
+                subprocess.call(cmd, shell=True)
                 subprocess.call(cmd, shell=True)
 
 

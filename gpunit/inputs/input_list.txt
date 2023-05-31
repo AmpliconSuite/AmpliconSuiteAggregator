@@ -1,0 +1,3 @@
+/files/gpunit/inputs/SRR8652055_outputs.tar.gz
+/files/gpunit/inputs/SRR8670701_outputs.tar.gz
+/files/gpunit/inputs/SRR8670737_outputs.tar.gz

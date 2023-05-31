@@ -12,10 +12,11 @@ RUN apt-get install -y unzip wget
 
 
 
+
 WORKDIR /opt/genepatt
 
 
-RUN pip3 install pandas==1.5.3
+RUN pip3 install pandas==1.5.3 requests==2.31.0
 
 COPY src* /opt/genepatt
 

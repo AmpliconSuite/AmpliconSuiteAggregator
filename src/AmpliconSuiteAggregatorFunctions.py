@@ -16,6 +16,7 @@ import subprocess
 import ast
 import zipfile
 from collections import defaultdict
+import requests
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
@@ -389,4 +390,3 @@ def validate():
 
     ## TODO: go through fields to see if each datatype is consistent
     ## and that paths exist
-

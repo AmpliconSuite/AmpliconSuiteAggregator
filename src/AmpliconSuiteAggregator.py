@@ -27,6 +27,7 @@ if __name__ == "__main__":
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
     parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository")
+    parser.add_argument('-t', '--testing', action = 'store_true')
 
 
 
@@ -52,8 +53,10 @@ if __name__ == "__main__":
         # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt -u edh021@ucsd.edu
 
         user = args.username
-        data = {'project_name': f'GenePattern AmpSuiteAggregator job id: {job_number}',
-                'description': 'Results transferred from GenePattern',
+        if args.testing:
+            job_number = np.random.randint(0, 99999)
+        data = {'project_name': f'Job_{job_number}',
+                'description': f'Results transferred from GenePattern, job id: {job_number}',
                 'private': True,
                 'project_members': [args.username],}
         

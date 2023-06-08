@@ -1,6 +1,6 @@
 from AmpliconSuiteAggregatorFunctions import *
 
-__version__ = "1.6"
+__version__ = "1.7"
 
 def get_zip_paths(filelist_fp):
     """

@@ -146,7 +146,8 @@ class Aggregator():
 
                 elif fp.endswith("_cnvkit_output"):
                     implied_sname = rchop(fp,"_cnvkit_output").rsplit("/")[-1]
-                    print(fp.rstrip("_cnvkit_output"), implied_sname)
+                    self.clean_by_suffix(".cnr.gz", fp)
+                    # print(fp.rstrip("_cnvkit_output"), implied_sname)
                     self.samp_ckit_dct[implied_sname] = fp
 
                 for f in os.listdir(fp):
@@ -380,6 +381,9 @@ class Aggregator():
 
     def clean_by_suffix(self, suffix, dir):
         if suffix and dir and not dir == "/" and not suffix == "*":
+            if not suffix.startswith("*"):
+                suffix = "*" + suffix
+
             cmd = f'rm -f {dir}/{suffix}'
             # try:
             subprocess.call(cmd, shell=True)

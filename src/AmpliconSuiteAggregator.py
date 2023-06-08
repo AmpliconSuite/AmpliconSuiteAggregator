@@ -26,8 +26,8 @@ if __name__ == "__main__":
     group.add_argument("-flist", "--filelist", type=str, help="Text file with files to use (one per line)")
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
-    parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository")
-    parser.add_argument('-t', '--testing', action = 'store_true')
+    parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository", required = False)
+    parser.add_argument('-t', '--testing', action = 'store_true', required = False)
 
 
 
@@ -50,7 +50,7 @@ if __name__ == "__main__":
         ## get pwd and get the job number from there. 
 
         ## testrun: 
-        # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt -u edh021@ucsd.edu
+        # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt -u $USER
 
         user = args.username
         if args.testing:

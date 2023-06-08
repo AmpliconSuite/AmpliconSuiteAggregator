@@ -21,7 +21,8 @@ import requests
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
-
+global EXCLUSION_LIST
+EXCLUSION_LIST = ['.bam', '.gz', '.fq', '.fastq', '.cram']
 
 class Aggregator():
     def __init__(self, filelist, root, output_name):
@@ -209,7 +210,10 @@ class Aggregator():
         with tarfile.open(tar_name, "w:gz") as tar_handle:
             for root, dirs, files in os.walk(path):
                 for file in files:
-                    tar_handle.add(os.path.join(root, file))
+                    fp = os.path.join(root, file)
+                    extension = os.path.splitext(fp)[-1]
+                    if extension not in EXCLUSION_LIST:
+                        tar_handle.add(fp)
         tar_handle.close()
 
     def cleanup(self):

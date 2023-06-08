@@ -147,6 +147,8 @@ class Aggregator():
                 elif fp.endswith("_cnvkit_output"):
                     implied_sname = rchop(fp,"_cnvkit_output").rsplit("/")[-1]
                     self.clean_by_suffix(".cnr.gz", fp)
+                    cmd = f'gzip -fq {fp}/*.cns 2> /dev/null'
+                    subprocess.call(cmd, shell=True)
                     # print(fp.rstrip("_cnvkit_output"), implied_sname)
                     self.samp_ckit_dct[implied_sname] = fp
 
@@ -209,14 +211,20 @@ class Aggregator():
     #     """
     #     shutil.move(DEST_ROOT, OUTPUT_PATH)
 
-    def tardir(self, path, tar_name):
+    def tardir(self, path, tar_name, keep_root=True):
         """
         compresses the path to a tar_mname
         """
         with tarfile.open(tar_name, "w:gz") as tar_handle:
             for root, dirs, files in os.walk(path):
                 for file in files:
-                    tar_handle.add(os.path.join(root, file))
+                    if not keep_root:
+                        arcname = os.path.join(os.path.basename(root), file)
+
+                    else:
+                        arcname = None
+
+                    tar_handle.add(os.path.join(root, file), arcname=arcname)
         tar_handle.close()
 
     def cleanup(self):
@@ -355,12 +363,8 @@ class Aggregator():
                         self.clean_by_suffix("*.out", orig_dir)
                         self.clean_by_suffix("*.cnr.gz", orig_dir)
 
-                        # compress .cns file
-                        cmd = f'gzip -fq {orig_dir}/*.cns 2> /dev/null'
-                        subprocess.call(cmd, shell=True)
-
                         tarf = orig_dir + ".tar.gz"
-                        self.tardir(orig_dir, tarf)
+                        self.tardir(orig_dir, tarf, keep_root=False)
                         sample_dct[dirfname] = tarf.replace('./results/', "")
 
                     else:

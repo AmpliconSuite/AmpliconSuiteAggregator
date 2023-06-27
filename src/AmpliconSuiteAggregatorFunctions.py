@@ -58,14 +58,11 @@ class Aggregator():
                     output_zip.extractall(destination)
                 output_zip.close()
             elif fp.endswith(".zip"):
-                    zip_name = os.path.basename(fp).replace(".zip", "")
-                    destination = f'{dest_root}/{zip_name}'
-                    with zipfile.ZipFile(fp, 'r') as zip_ref:
-                        zip_ref.extractall(destination)
-                    zip_ref.close()
-
-            # else:
-            #     print(f'No need to extract: {fp}')
+                zip_name = os.path.basename(fp).replace(".zip", "")
+                destination = f'{dest_root}/{zip_name}'
+                with zipfile.ZipFile(fp, 'r') as zip_ref:
+                    zip_ref.extractall(destination)
+                zip_ref.close()
 
         except Exception as e:
             print(e)
@@ -75,7 +72,6 @@ class Aggregator():
         Unzips the zip files, and get directories for files within
 
         """
-
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
@@ -279,7 +275,7 @@ class Aggregator():
                 if len(ref_genomes) > 1:
                     sys.stderr.write(str(ref_genomes) + "\n")
                     sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
-                                     "supports single-reference projects currently. Exiting.")
+                                     "supports single-reference projects currently. Exiting.\n")
                     sys.exit(1)
 
                 potential_str_lsts = [

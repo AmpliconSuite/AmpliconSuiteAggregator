@@ -203,7 +203,7 @@ class Aggregator():
         ## if reference isn't downloaded already, then download appropriate reference genome
         if not os.path.exists(os.path.join('/opt/genepatt/.AA_DATA_REPO', self.ref)):
             os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
-            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_indexed_md5sum.tar.gz")
+            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_md5sum.tar.gz")
             os.system(f"tar zxf /opt/genepatt/.AA_DATA_REPO/{self.ref}.tar.gz --directory /opt/genepatt/.AA_DATA_REPO")
 
         ## 2. run amplicon classifier.py

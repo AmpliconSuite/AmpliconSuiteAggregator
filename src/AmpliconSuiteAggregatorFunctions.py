@@ -24,9 +24,11 @@ DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 global EXCLUSION_LIST
-EXCLUSION_LIST = ['.bam', '.gz', '.fq', '.fastq', '.cram']
+EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz']
 CLASSIFIER_FILES = "_classification, _amplicon_classification_profiles.tsv,_annotated_cycles_files, _classification_bed_files, _ecDNA_counts.tsv, _edge_classification_profiles.tsv, _feature_basic_properties.tsv, _feature_entropy.tsv, _feature_similarity_scores.tsv, _features_to_graph.txt, _gene_list.tsv, .input, _SV_summaries,_result_data.json,_result_table.tsv,files,index.html".split(',')
 
+os.environ['AA_DATA_REPO'] = '/opt/genepatt/.AA_DATA_REPO'
+os.environ['AC_SRC'] = '/home/programs/AmpliconClassifier-main'
 
 
 class Aggregator():
@@ -196,19 +198,19 @@ class Aggregator():
         ## run amplicon classifier on AA_outputs:
 
         ## 1. make inputs
-        os.system(f"$AC_SRC/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
+        os.system(f"/home/programs/AmpliconClassifier-main/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
 
         ## if reference isn't downloaded already, then download appropriate reference genome
-        if not os.path.exists(os.path.join(os.environ['AA_DATA_REPO'], self.ref)):
-            os.system(f"wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
-            os.system(f"wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_indexed_md5sum.tar.gz")
-            os.system(f"tar zxf $AA_DATA_REPO/{self.ref}.tar.gz --directory $AA_DATA_REPO")
+        if not os.path.exists(os.path.join('/opt/genepatt/.AA_DATA_REPO', self.ref)):
+            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
+            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_indexed_md5sum.tar.gz")
+            os.system(f"tar zxf /opt/genepatt/.AA_DATA_REPO/{self.ref}.tar.gz --directory /opt/genepatt/.AA_DATA_REPO")
 
         ## 2. run amplicon classifier.py
-        os.system(f"python3 $AC_SRC/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
+        os.system(f"python3 /home/programs/AmpliconClassifier-main/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
         
         ## 3. run make_results_table.py
-        os.system(f"python3 $AC_SRC/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
+        os.system(f"python3 /home/programs/AmpliconClassifier-main/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
                   --classification_file {OUTPUT_PATH}/{self.output_name}_amplicon_classification_profiles.tsv \
                     --summary_map {OUTPUT_PATH}/{self.output_name}_summary_map.txt \
                         --ref {self.ref}")

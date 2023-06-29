@@ -33,33 +33,33 @@ def post_package(fp, data, user):
 
 
 
-if __name__ == "__main__":
-    ## to do one aggregation
-    # python3 /module/src/AmpliconSuiteAggregator.py -flist /module/gpunit/inputs/input_list.txt
+# if __name__ == "__main__":
+#     ## to do one aggregation
+#     # python3 /module/src/AmpliconSuiteAggregator.py -flist /module/gpunit/inputs/input_list.txt
 
-    homepage = 'https://dev.ampliconrepository.org'
-    ## get cookie first
-    session = requests.Session()
-    cookie = session.get(homepage)
-    csrf_token = cookie.cookies.get_dict()['csrftoken']
-    print(csrf_token)
+#     homepage = 'https://dev.ampliconrepository.org'
+#     ## get cookie first
+#     session = requests.Session()
+#     cookie = session.get(homepage)
+#     csrf_token = cookie.cookies.get_dict()['csrftoken']
+#     print(csrf_token)
 
 
-    upload_file = os.path.join('/Users/edwinhuang/Downloads/test_POST_from_gpBeta.tar.gz')
+#     upload_file = os.path.join('/Users/edwinhuang/Downloads/test_POST_from_gpBeta.tar.gz')
 
-    upload_url = f'{homepage}/upload_api/'
+#     upload_url = f'{homepage}/upload_api/'
 
-    headers = {
-        'Content-Type':'multipart/form-data',
-        'X-CSRFToken':csrf_token,
-    }
-    data = {'project_name': 'testPOST_Private_Project3',
-            'description':'a test POST request to API',
-            'private':True,
-            'project_members':['edh021@ucsd.edu']}
-    files = {'file': open(upload_file, 'rb')}
+#     headers = {
+#         'Content-Type':'multipart/form-data',
+#         'X-CSRFToken':csrf_token,
+#     }
+#     data = {'project_name': 'testPOST_Private_Project3',
+#             'description':'a test POST request to API',
+#             'private':True,
+#             'project_members':['edh021@ucsd.edu']}
+#     files = {'file': open(upload_file, 'rb')}
 
-    response = requests.post(upload_url,data = data, files = files)
-    print(response.status_code)
+#     response = requests.post(upload_url,data = data, files = files)
+#     print(response.status_code)
 
 

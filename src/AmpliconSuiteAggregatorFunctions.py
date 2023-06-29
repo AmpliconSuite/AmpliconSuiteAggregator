@@ -17,19 +17,28 @@ import ast
 import zipfile
 from collections import defaultdict
 import requests
+import intervaltree
+
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 global EXCLUSION_LIST
 EXCLUSION_LIST = ['.bam', '.gz', '.fq', '.fastq', '.cram']
+CLASSIFIER_FILES = "_classification, _amplicon_classification_profiles.tsv,_annotated_cycles_files, _classification_bed_files, _ecDNA_counts.tsv, _edge_classification_profiles.tsv, _feature_basic_properties.tsv, _feature_entropy.tsv, _feature_similarity_scores.tsv, _features_to_graph.txt, _gene_list.tsv, .input, _SV_summaries,_result_data.json,_result_table.tsv,files,index.html".split(',')
+
+
 
 class Aggregator():
-    def __init__(self, filelist, root, output_name):
+    def __init__(self, filelist, root, output_name, run_classifier, ref):
         self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
+        self.run_classifier = run_classifier
+        self.ref = ref
         self.unzip()
+        if self.run_classifier == "Yes":
+            self.run_amp_classifier()
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
@@ -102,11 +111,13 @@ class Aggregator():
 
                 if fp.endswith("_AA_results"):
                     if any([x.endswith("_summary.txt") for x in os.listdir(fp)]):
+                        print(f'Moving AA results to {OUTPUT_PATH}')
                         os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
                 if fp.endswith("_cnvkit_output"):
                     # tarname = os.path.dirname(fp) + ".tar.gz"
                     # self.tardir(os.path.dirname(fp), tarname)
+                    print(f'Moving cnvkit_outputs to {OUTPUT_PATH}')
                     os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
                 if os.path.exists(fp) and any([x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
@@ -115,16 +126,7 @@ class Aggregator():
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
                         print(f'Moving file {fp} to {OTHER_FILES}')
                         os.system(f'mv -vf {fp} {OTHER_FILES}')
-
-                    # try: # check if this is an AA outputs folder
-                    #     sample_name = re.findall(f'{DEST_ROOT}\/.*\/(.*)_AA_results$', fp)[0]
-                    #     samples.append(sample_name)
-                    #     print(os.path.dirname(fp))
-                    #     print(os.path.exists(os.path.dirname(fp)))
-                    #     os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
-                    #     # shutil.move(os.path.dirname(fp), output_dir)
-                    # except:
-                    #     continue
+                   
 
     def locate_dirs_and_metadata_jsons(self):
         # post-move identification of AA and CNVKit files:
@@ -150,6 +152,71 @@ class Aggregator():
                     elif f.endswith("_sample_metadata.json"):
                         implied_sname = f.rstrip("_sample_metadata.json")
                         self.samp_mdata_dct[implied_sname] = fp + "/" + f
+
+
+
+
+    def run_amp_classifier(self):
+        """
+        Goes into the OUTPUT_PATH to look for and delete amplicon classifier results. 
+
+        will run amplicon classifier on AA_results
+        1. downloads genome based on
+            - run metadata
+            - log
+            - default to GRCh38 or user input
+        2. run make_inputs.sh on sample directories
+        3. run Amplicon Classifier on each sample 
+        """
+
+        # for each sample in AA_outputs
+
+        # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt --run_classifier Yes -ref GRCh38
+
+
+        print('************ STARTING AMPLICON CLASSIFIER NOW **************')
+        print(f'removing classifier files and directories{CLASSIFIER_FILES}')
+        for root, dirs, files in os.walk(OUTPUT_PATH):
+            for name in files:
+                ## paths to files
+                fp = os.path.join(root, name)
+                for i in CLASSIFIER_FILES:
+                    if i in fp:
+                        try:
+                            os.remove(fp)
+                        except Exception as e:
+                            print(e)
+
+            for name in dirs:
+                fp = os.path.join(root, name)
+                for i in CLASSIFIER_FILES:
+                    if i in fp:
+                        shutil.rmtree('fp', ignore_errors=True)
+
+        ## run amplicon classifier on AA_outputs:
+
+        ## 1. make inputs
+        os.system(f"$AC_SRC/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
+
+        ## if reference isn't downloaded already, then download appropriate reference genome
+        if not os.path.exists(os.path.join(os.environ['AA_DATA_REPO'], self.ref)):
+            os.system(f"wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
+            os.system(f"wget -q -P $AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_indexed_md5sum.tar.gz")
+            os.system(f"tar zxf $AA_DATA_REPO/{self.ref}.tar.gz --directory $AA_DATA_REPO")
+
+        ## 2. run amplicon classifier.py
+        os.system(f"python3 $AC_SRC/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
+        
+        ## 3. run make_results_table.py
+        os.system(f"python3 $AC_SRC/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
+                  --classification_file {OUTPUT_PATH}/{self.output_name}_amplicon_classification_profiles.tsv \
+                    --summary_map {OUTPUT_PATH}/{self.output_name}_summary_map.txt \
+                        --ref {self.ref}")
+
+
+        print('************ ENDING AMPLICON CLASSIFIER NOW **************')
+
+
 
     def aggregate_tables(self):
         """
@@ -311,6 +378,7 @@ class Aggregator():
                     'Run metadata JSON',
                     'Sample metadata JSON',
                 ]
+
                 for feature in features_of_interest:
                     if feature in sample_dct and sample_dct[feature]:
                         feat_basename = os.path.basename(sample_dct[feature])

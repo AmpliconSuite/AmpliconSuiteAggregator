@@ -28,6 +28,11 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
     parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository", required = False)
     parser.add_argument('-t', '--testing', action = 'store_true', required = False)
+    parser.add_argument("-c", "--run_classifier",type = str, help = "If 'Yes', then run Amplicon Classifier on AA results. \
+                        If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.")
+    parser.add_argument("-s", "--server", type = str, help = "Which server to send results to. Accepts 'dev' or 'prod'. ")
+    parser.add_argument("-ref", type = str, help = "Reference genome to use for Amplicon Classifier")
+    
 
 
 
@@ -40,7 +45,7 @@ if __name__ == "__main__":
         filelist = args.files
 
     root = '.'
-    aggregate = Aggregator(filelist, root, args.output_name)
+    aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref)
     output_fp = args.output_name + ".tar.gz"
 
     if args.username:
@@ -50,7 +55,9 @@ if __name__ == "__main__":
         ## get pwd and get the job number from there. 
 
         ## testrun: 
-        # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt -u $USER
+        # python3 /files/src/AmpliconSuiteAggregator.py -flist /inputs/input_list.txt -u $USER
+        # python3 AmpliconSuiteAggregator.py -flist /inputs/input_list.txt --run_classifier Yes
+
 
         user = args.username
         if args.testing:

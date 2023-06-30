@@ -37,7 +37,7 @@ def post_package(fp, data, user):
 #     ## to do one aggregation
 #     # python3 /module/src/AmpliconSuiteAggregator.py -flist /module/gpunit/inputs/input_list.txt
 
-#     homepage = 'https://dev.ampliconrepository.org'
+#     homepage = 'http://127.0.0.1:8000'
 #     ## get cookie first
 #     session = requests.Session()
 #     cookie = session.get(homepage)
@@ -53,7 +53,7 @@ def post_package(fp, data, user):
 #         'Content-Type':'multipart/form-data',
 #         'X-CSRFToken':csrf_token,
 #     }
-#     data = {'project_name': 'testPOST_Private_Project3',
+#     data = {'project_name': 'testPOST_Private_Project_with_s3adjustment',
 #             'description':'a test POST request to API',
 #             'private':True,
 #             'project_members':['edh021@ucsd.edu']}

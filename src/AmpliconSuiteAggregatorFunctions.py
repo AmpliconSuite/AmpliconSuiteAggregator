@@ -17,7 +17,6 @@ import ast
 import zipfile
 from collections import defaultdict
 import requests
-import intervaltree
 
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
@@ -25,15 +24,30 @@ OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
 global EXCLUSION_LIST
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz']
-CLASSIFIER_FILES = "_classification, _amplicon_classification_profiles.tsv,_annotated_cycles_files, _classification_bed_files, _ecDNA_counts.tsv, _edge_classification_profiles.tsv, _feature_basic_properties.tsv, _feature_entropy.tsv, _feature_similarity_scores.tsv, _features_to_graph.txt, _gene_list.tsv, .input, _SV_summaries,_result_data.json,_result_table.tsv,files,index.html".split(',')
+# STRING BELOW CANNOT HAVE ANY SPACES IN IT
+CLASSIFIER_FILES = "_classification,_amplicon_classification_profiles.tsv,_annotated_cycles_files,_classification_bed_files," \
+                   "_ecDNA_counts.tsv,_edge_classification_profiles.tsv,_feature_basic_properties.tsv,_feature_entropy.tsv," \
+                   "_feature_similarity_scores.tsv,_features_to_graph.txt,_gene_list.tsv,.input,_SV_summaries,_result_data.json," \
+                   "_result_table.tsv,files,index.html".split(',')
 
 os.environ['AA_DATA_REPO'] = '/opt/genepatt/.AA_DATA_REPO'
 os.environ['AC_SRC'] = '/home/programs/AmpliconClassifier-main'
+
 
 def rchop(s, suffix):
     if suffix and s.endswith(suffix):
         return s[:-len(suffix)]
     return s
+
+
+def string_to_list(self, string):
+    """
+    Converts a string representation of a list to a list.
+    """
+    if "|" in string:
+        return string.split("|")
+    else:
+        return string.strip('][').replace(" ", "").split(',')
 
 
 class Aggregator():
@@ -131,7 +145,6 @@ class Aggregator():
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
                         print(f'Moving file {fp} to {OTHER_FILES}')
                         os.system(f'mv -vf {fp} {OTHER_FILES}')
-                   
 
     def locate_dirs_and_metadata_jsons(self):
         # post-move identification of AA and CNVKit files:
@@ -162,9 +175,6 @@ class Aggregator():
                         implied_sname = rchop(f, "_sample_metadata.json")
                         self.samp_mdata_dct[implied_sname] = fp + "/" + f
 
-
-
-
     def run_amp_classifier(self):
         """
         Goes into the OUTPUT_PATH to look for and delete amplicon classifier results. 
@@ -182,8 +192,7 @@ class Aggregator():
 
         # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt --run_classifier Yes -ref GRCh38
 
-
-        print('************ STARTING AMPLICON CLASSIFIER NOW **************')
+        print('************ STARTING AMPLICON CLASSIFIER **************')
         print(f'removing classifier files and directories{CLASSIFIER_FILES}')
         for root, dirs, files in os.walk(OUTPUT_PATH):
             for name in files:
@@ -223,8 +232,7 @@ class Aggregator():
                         --ref {self.ref}")
 
 
-        print('************ ENDING AMPLICON CLASSIFIER NOW **************')
-
+        print('************ ENDING AMPLICON CLASSIFIER **************')
 
 
     def aggregate_tables(self):
@@ -271,12 +279,6 @@ class Aggregator():
         run_file.close()
         return sample_to_ac_dir
 
-    # def move_files(self):
-    #     """
-    #     Move files to correct location for output
-    #     """
-    #     shutil.move(DEST_ROOT, OUTPUT_PATH)
-
     def tardir(self, path, tar_name, keep_root=True):
         """
         compresses the path to a tar_mname
@@ -284,13 +286,15 @@ class Aggregator():
         with tarfile.open(tar_name, "w:gz") as tar_handle:
             for root, dirs, files in os.walk(path):
                 for file in files:
-                    if not keep_root:
-                        arcname = os.path.join(os.path.basename(root), file)
+                    if not any([file.endswith(x) for x in EXCLUSION_LIST]):
+                        if not keep_root:
+                            arcname = os.path.join(os.path.basename(root), file)
 
-                    else:
-                        arcname = None
+                        else:
+                            arcname = None
 
-                    tar_handle.add(os.path.join(root, file), arcname=arcname)
+                        tar_handle.add(os.path.join(root, file), arcname=arcname)
+
         tar_handle.close()
 
     def cleanup(self):
@@ -314,15 +318,6 @@ class Aggregator():
     #                 return fp.replace('./results/', "")
     #
     #     return 'Not Provided'
-    
-    def string_to_list(self, string):
-        """
-        Converts a string representation of a list to a list.
-        """
-        if "|" in string:
-            return string.split("|")
-        else:
-            return string.strip('][').replace(" ", "").split(',')
 
     def json_modifications(self):
         """
@@ -449,7 +444,6 @@ class Aggregator():
         aggregate.to_csv('./results/aggregated_results.csv')
         aggregate.to_html('./results/aggregated_results.html')
 
-
     def clean_by_suffix(self, suffix, dir):
         if suffix and dir and not dir == "/" and not suffix == "*":
             if not suffix.startswith("*"):
@@ -465,9 +459,6 @@ class Aggregator():
         for d in dlist:
             if d and not d == "/":
                 shutil.rmtree(d)
-                #cmd = f'rm -rf {f}'
-                #print(cmd)
-                #subprocess.call(cmd)
 
 
 # TODO: VALIDATE IS NEVER USED!

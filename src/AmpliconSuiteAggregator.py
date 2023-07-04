@@ -2,6 +2,7 @@ from AmpliconSuiteAggregatorFunctions import *
 from ASA_POST import * 
 import numpy as np
 
+__version__ = "1.7"
 
 def get_zip_paths(filelist_fp):
     """
@@ -32,6 +33,7 @@ if __name__ == "__main__":
                         If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.")
     parser.add_argument("-s", "--server", type = str, help = "Which server to send results to. Accepts 'dev' or 'prod'. ", choices = ['dev', 'prod'])
     parser.add_argument("--ref", help="Reference genome name used for alignment, one of hg19, GRCh37, GRCh38, GRCh38_viral, or mm10", choices=["hg19", "GRCh37", "GRCh38", "GRCh38_viral", "mm10"])
+    parser.add_argument("-v", "--version", action='version', version=__version__)
 
 
     args = parser.parse_args()
@@ -43,6 +45,7 @@ if __name__ == "__main__":
         filelist = args.files
 
     root = '.'
+    print("AmpliconSuiteAggregator version " + __version__)
     aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref)
     output_fp = args.output_name + ".tar.gz"
 

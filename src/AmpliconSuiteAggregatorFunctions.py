@@ -3,7 +3,6 @@
 # This script takes in completed AmpliconArchitect and
 # AmpliconClassifier results and aggregates the results.
 ###
-import argparse
 import sys
 import tarfile
 import os
@@ -22,16 +21,12 @@ import requests
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
-global EXCLUSION_LIST
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz']
 # STRING BELOW CANNOT HAVE ANY SPACES IN IT
 CLASSIFIER_FILES = "_classification,_amplicon_classification_profiles.tsv,_annotated_cycles_files,_classification_bed_files," \
                    "_ecDNA_counts.tsv,_edge_classification_profiles.tsv,_feature_basic_properties.tsv,_feature_entropy.tsv," \
                    "_feature_similarity_scores.tsv,_features_to_graph.txt,_gene_list.tsv,.input,_SV_summaries,_result_data.json," \
                    "_result_table.tsv,files,index.html".split(',')
-
-os.environ['AA_DATA_REPO'] = '/opt/genepatt/.AA_DATA_REPO'
-os.environ['AC_SRC'] = '/home/programs/AmpliconClassifier-main'
 
 
 def rchop(s, suffix):
@@ -40,7 +35,7 @@ def rchop(s, suffix):
     return s
 
 
-def string_to_list(self, string):
+def string_to_list(string):
     """
     Converts a string representation of a list to a list.
     """
@@ -51,12 +46,13 @@ def string_to_list(self, string):
 
 
 class Aggregator():
-    def __init__(self, filelist, root, output_name, run_classifier, ref):
+    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path):
         self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
         self.run_classifier = run_classifier
         self.ref = ref
+        self.py3_path = py3_path
         self.unzip()
         if self.run_classifier == "Yes":
             self.run_amp_classifier()
@@ -193,40 +189,57 @@ class Aggregator():
         # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt --run_classifier Yes -ref GRCh38
 
         print('************ STARTING AMPLICON CLASSIFIER **************')
-        print(f'removing classifier files and directories{CLASSIFIER_FILES}')
+        print(f'removing classifier files and directories ending with:\n {CLASSIFIER_FILES}')
+        removed_files = 0
         for root, dirs, files in os.walk(OUTPUT_PATH):
             for name in files:
-                ## paths to files
-                fp = os.path.join(root, name)
-                for i in CLASSIFIER_FILES:
-                    if i in fp:
-                        try:
-                            os.remove(fp)
-                        except Exception as e:
-                            print(e)
+                if any([name.endswith(i) for i in CLASSIFIER_FILES]):
+                    print(name, "to remove")
+                    fp = os.path.join(root, name)
+                    try:
+                        os.remove(fp)
+                        removed_files+=1
+                    except Exception as e:
+                        print(e)
 
             for name in dirs:
-                fp = os.path.join(root, name)
-                for i in CLASSIFIER_FILES:
-                    if i in fp:
-                        shutil.rmtree('fp', ignore_errors=True)
+                if any([name.endswith(i) for i in CLASSIFIER_FILES]):
+                    print(name, "to remove")
+                    fp = os.path.join(root, name)
+                    shutil.rmtree(fp, ignore_errors=True)
+                    removed_files+=1
+
+        print(f"Removed {removed_files} files and directories from previous classification results")
 
         ## run amplicon classifier on AA_outputs:
 
         ## 1. make inputs
-        os.system(f"/home/programs/AmpliconClassifier-main/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
+        try:
+            AC_SRC = os.environ['AC_SRC']
+        except KeyError:
+            sys.stderr.write("AC_SRC variable not found! AmpliconClassifier is not properly installed.\n")
+            sys.exit(1)
+
+        print(f"AC_SRC is set to {AC_SRC}")
+        os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
 
         ## if reference isn't downloaded already, then download appropriate reference genome
-        if not os.path.exists(os.path.join('/opt/genepatt/.AA_DATA_REPO', self.ref)):
-            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
-            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_md5sum.tar.gz")
-            os.system(f"tar zxf /opt/genepatt/.AA_DATA_REPO/{self.ref}.tar.gz --directory /opt/genepatt/.AA_DATA_REPO")
+        try:
+            local_data_repo = os.environ['AA_DATA_REPO']
+        except KeyError:
+            sys.stderr.write("AA_DATA_REPO variable not found! The AA data repo directory is not properly configured.\n")
+            sys.exit(1)
+
+        if not os.path.exists(os.path.join(local_data_repo, self.ref)):
+            os.system(f"wget -q -P {local_data_repo} https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
+            os.system(f"wget -q -P {local_data_repo} https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_md5sum.tar.gz")
+            os.system(f"tar zxf {local_data_repo}/{self.ref}.tar.gz --directory {local_data_repo}")
 
         ## 2. run amplicon classifier.py
-        os.system(f"python3 /home/programs/AmpliconClassifier-main/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
+        os.system(f"{self.py3_path} {AC_SRC}/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
         
         ## 3. run make_results_table.py
-        os.system(f"python3 /home/programs/AmpliconClassifier-main/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
+        os.system(f"{self.py3_path} {AC_SRC}/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
                   --classification_file {OUTPUT_PATH}/{self.output_name}_amplicon_classification_profiles.tsv \
                     --summary_map {OUTPUT_PATH}/{self.output_name}_summary_map.txt \
                         --ref {self.ref}")
@@ -348,11 +361,11 @@ class Aggregator():
                     'Oncogenes',
                     'All genes',
                 ]
-                for lists in potential_str_lsts:
+                for lname in potential_str_lsts:
                     try:
-                        sample_dct[lists] = self.string_to_list(sample_dct[lists])
+                        sample_dct[lname] = string_to_list(sample_dct[lname])
                     except:
-                        print(f'Feature: {lists} doesnt exist for sample: {sample_name}')
+                        print(f'Feature: {lname} doesnt exist for sample: {sample_name}')
 
                 # update each path in run.json by finding them in outputs folder
                 # separately for feature bed file because location is different

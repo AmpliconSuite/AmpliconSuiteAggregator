@@ -32,6 +32,6 @@ RUN mkdir /opt/genepatt/gpunit
 RUN mkdir -p /home/programs
 ADD https://github.com/AmpliconSuite/AmpliconClassifier/archive/refs/heads/main.zip /home/programs
 RUN cd /home/programs && unzip main.zip
-RUN echo export AC_SRC=/home/programs/AmpliconClassifier-main >> ~/.bashrc
+#RUN echo export AC_SRC=/home/programs/AmpliconClassifier-main >> ~/.bashrc # handled by .env file
 RUN mkdir -p /opt/genepatt/.AA_DATA_REPO
-RUN echo export AA_DATA_REPO=/opt/genepatt/.AA_DATA_REPO >> ~/.bashrc
+#RUN echo export AA_DATA_REPO=/opt/genepatt/.AA_DATA_REPO >> ~/.bashrc # handled by .env file

@@ -3,7 +3,6 @@
 # This script takes in completed AmpliconArchitect and
 # AmpliconClassifier results and aggregates the results.
 ###
-import argparse
 import sys
 import tarfile
 import os
@@ -17,38 +16,56 @@ import ast
 import zipfile
 from collections import defaultdict
 import requests
-import intervaltree
 
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
 OUTPUT_PATH = os.path.join("./results/AA_outputs")
 OTHER_FILES = os.path.join("./results/other_files")
-global EXCLUSION_LIST
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz']
-CLASSIFIER_FILES = "_classification, _amplicon_classification_profiles.tsv,_annotated_cycles_files, _classification_bed_files, _ecDNA_counts.tsv, _edge_classification_profiles.tsv, _feature_basic_properties.tsv, _feature_entropy.tsv, _feature_similarity_scores.tsv, _features_to_graph.txt, _gene_list.tsv, .input, _SV_summaries,_result_data.json,_result_table.tsv,files,index.html".split(',')
+# STRING BELOW CANNOT HAVE ANY SPACES IN IT
+CLASSIFIER_FILES = "_classification,_amplicon_classification_profiles.tsv,_annotated_cycles_files,_classification_bed_files," \
+                   "_ecDNA_counts.tsv,_edge_classification_profiles.tsv,_feature_basic_properties.tsv,_feature_entropy.tsv," \
+                   "_feature_similarity_scores.tsv,_features_to_graph.txt,_gene_list.tsv,.input,_SV_summaries,_result_data.json," \
+                   "_result_table.tsv,files,index.html".split(',')
 
-os.environ['AA_DATA_REPO'] = '/opt/genepatt/.AA_DATA_REPO'
-os.environ['AC_SRC'] = '/home/programs/AmpliconClassifier-main'
+
+def rchop(s, suffix):
+    if suffix and s.endswith(suffix):
+        return s[:-len(suffix)]
+    return s
+
+
+def string_to_list(string):
+    """
+    Converts a string representation of a list to a list.
+    """
+    if "|" in string:
+        return string.split("|")
+    else:
+        return string.strip('][').replace(" ", "").split(',')
 
 
 class Aggregator():
-    def __init__(self, filelist, root, output_name, run_classifier, ref):
+    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path):
         self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
         self.run_classifier = run_classifier
         self.ref = ref
+        self.py3_path = py3_path
         self.unzip()
         if self.run_classifier == "Yes":
             self.run_amp_classifier()
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
-        print(self.samp_ckit_dct)
-        print(self.samp_AA_dct)
+        # print(self.samp_ckit_dct)
+        # print(self.samp_AA_dct)
+        # print(self.samp_mdata_dct)
+        # print(self.run_mdata_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
-        self.move_files()
+        # self.move_files()
         self.cleanup()
 
     def unzip_file(self, fp, dest_root):
@@ -63,14 +80,11 @@ class Aggregator():
                     output_zip.extractall(destination)
                 output_zip.close()
             elif fp.endswith(".zip"):
-                    zip_name = os.path.basename(fp).replace(".zip", "")
-                    destination = f'{dest_root}/{zip_name}'
-                    with zipfile.ZipFile(fp, 'r') as zip_ref:
-                        zip_ref.extractall(destination)
-                    zip_ref.close()
-
-            # else:
-            #     print(f'No need to extract: {fp}')
+                zip_name = os.path.basename(fp).replace(".zip", "")
+                destination = f'{dest_root}/{zip_name}'
+                with zipfile.ZipFile(fp, 'r') as zip_ref:
+                    zip_ref.extractall(destination)
+                zip_ref.close()
 
         except Exception as e:
             print(e)
@@ -80,7 +94,6 @@ class Aggregator():
         Unzips the zip files, and get directories for files within
 
         """
-
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
@@ -128,7 +141,6 @@ class Aggregator():
                     if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
                         print(f'Moving file {fp} to {OTHER_FILES}')
                         os.system(f'mv -vf {fp} {OTHER_FILES}')
-                   
 
     def locate_dirs_and_metadata_jsons(self):
         # post-move identification of AA and CNVKit files:
@@ -139,24 +151,25 @@ class Aggregator():
                     continue
 
                 if fp.endswith("_AA_results"):
-                    implied_sname = fp.rstrip("_AA_results").rsplit("/")[-1]
+                    implied_sname = rchop(fp,"_AA_results").rsplit("/")[-1]
                     self.samp_AA_dct[implied_sname] = fp
 
                 elif fp.endswith("_cnvkit_output"):
-                    implied_sname = fp.rstrip("_cnvkit_output").rsplit("/")[-1]
+                    implied_sname = rchop(fp,"_cnvkit_output").rsplit("/")[-1]
+                    self.clean_by_suffix(".cnr.gz", fp)
+                    cmd = f'gzip -fq {fp}/*.cns 2> /dev/null'
+                    subprocess.call(cmd, shell=True)
+                    # print(fp.rstrip("_cnvkit_output"), implied_sname)
                     self.samp_ckit_dct[implied_sname] = fp
 
                 for f in os.listdir(fp):
                     if f.endswith("_run_metadata.json"):
-                        implied_sname = f.rstrip("_run_metadata.json")
+                        implied_sname = rchop(f, "_run_metadata.json")
                         self.run_mdata_dct[implied_sname] = fp + "/" + f
 
                     elif f.endswith("_sample_metadata.json"):
-                        implied_sname = f.rstrip("_sample_metadata.json")
+                        implied_sname = rchop(f, "_sample_metadata.json")
                         self.samp_mdata_dct[implied_sname] = fp + "/" + f
-
-
-
 
     def run_amp_classifier(self):
         """
@@ -175,49 +188,64 @@ class Aggregator():
 
         # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt --run_classifier Yes -ref GRCh38
 
-
-        print('************ STARTING AMPLICON CLASSIFIER NOW **************')
-        print(f'removing classifier files and directories{CLASSIFIER_FILES}')
+        print('************ STARTING AMPLICON CLASSIFIER **************')
+        print(f'removing classifier files and directories ending with:\n {CLASSIFIER_FILES}')
+        removed_files = 0
         for root, dirs, files in os.walk(OUTPUT_PATH):
             for name in files:
-                ## paths to files
-                fp = os.path.join(root, name)
-                for i in CLASSIFIER_FILES:
-                    if i in fp:
-                        try:
-                            os.remove(fp)
-                        except Exception as e:
-                            print(e)
+                if any([name.endswith(i) for i in CLASSIFIER_FILES]):
+                    print(name, "to remove")
+                    fp = os.path.join(root, name)
+                    try:
+                        os.remove(fp)
+                        removed_files+=1
+                    except Exception as e:
+                        print(e)
 
             for name in dirs:
-                fp = os.path.join(root, name)
-                for i in CLASSIFIER_FILES:
-                    if i in fp:
-                        shutil.rmtree('fp', ignore_errors=True)
+                if any([name.endswith(i) for i in CLASSIFIER_FILES]):
+                    print(name, "to remove")
+                    fp = os.path.join(root, name)
+                    shutil.rmtree(fp, ignore_errors=True)
+                    removed_files+=1
+
+        print(f"Removed {removed_files} files and directories from previous classification results")
 
         ## run amplicon classifier on AA_outputs:
 
         ## 1. make inputs
-        os.system(f"/home/programs/AmpliconClassifier-main/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
+        try:
+            AC_SRC = os.environ['AC_SRC']
+        except KeyError:
+            sys.stderr.write("AC_SRC variable not found! AmpliconClassifier is not properly installed.\n")
+            sys.exit(1)
+
+        print(f"AC_SRC is set to {AC_SRC}")
+        os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
 
         ## if reference isn't downloaded already, then download appropriate reference genome
-        if not os.path.exists(os.path.join('/opt/genepatt/.AA_DATA_REPO', self.ref)):
-            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
-            os.system(f"wget -q -P /opt/genepatt/.AA_DATA_REPO https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_md5sum.tar.gz")
-            os.system(f"tar zxf /opt/genepatt/.AA_DATA_REPO/{self.ref}.tar.gz --directory /opt/genepatt/.AA_DATA_REPO")
+        try:
+            local_data_repo = os.environ['AA_DATA_REPO']
+        except KeyError:
+            sys.stderr.write("AA_DATA_REPO variable not found! The AA data repo directory is not properly configured.\n")
+            sys.exit(1)
+
+        if not os.path.exists(os.path.join(local_data_repo, self.ref)):
+            os.system(f"wget -q -P {local_data_repo} https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}.tar.gz")
+            os.system(f"wget -q -P {local_data_repo} https://datasets.genepattern.org/data/module_support_files/AmpliconArchitect/{self.ref}_md5sum.tar.gz")
+            os.system(f"tar zxf {local_data_repo}/{self.ref}.tar.gz --directory {local_data_repo}")
 
         ## 2. run amplicon classifier.py
-        os.system(f"python3 /home/programs/AmpliconClassifier-main/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
+        os.system(f"{self.py3_path} {AC_SRC}/amplicon_classifier.py -i {OUTPUT_PATH}/{self.output_name}.input --ref {self.ref} -o {OUTPUT_PATH}/{self.output_name} ")
         
         ## 3. run make_results_table.py
-        os.system(f"python3 /home/programs/AmpliconClassifier-main/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
+        os.system(f"{self.py3_path} {AC_SRC}/make_results_table.py --input {OUTPUT_PATH}/{self.output_name}.input \
                   --classification_file {OUTPUT_PATH}/{self.output_name}_amplicon_classification_profiles.tsv \
                     --summary_map {OUTPUT_PATH}/{self.output_name}_summary_map.txt \
                         --ref {self.ref}")
 
 
-        print('************ ENDING AMPLICON CLASSIFIER NOW **************')
-
+        print('************ ENDING AMPLICON CLASSIFIER **************')
 
 
     def aggregate_tables(self):
@@ -258,44 +286,39 @@ class Aggregator():
                             sample_num += 1
 
         ## output the table
-        aggregate.to_csv('./results/aggregated_results.csv')
-        aggregate.to_html('./results/aggregated_results.html')
         with open('./results/run.json', 'w') as run_file:
             json.dump({'runs': runs}, run_file)
 
         run_file.close()
         return sample_to_ac_dir
 
-    def move_files(self):
-        """
-        Move files to correct location for output
-        """
-        shutil.move(DEST_ROOT, OUTPUT_PATH)
-
-    def tardir(self, path, tar_name):
+    def tardir(self, path, tar_name, keep_root=True):
         """
         compresses the path to a tar_mname
         """
         with tarfile.open(tar_name, "w:gz") as tar_handle:
             for root, dirs, files in os.walk(path):
                 for file in files:
-                    fp = os.path.join(root, file)
-                    extension = os.path.splitext(fp)[-1]
-                    if extension not in EXCLUSION_LIST:
-                        tar_handle.add(fp)
+                    if not any([file.endswith(x) for x in EXCLUSION_LIST]):
+                        if not keep_root:
+                            arcname = os.path.join(os.path.basename(root), file)
+
+                        else:
+                            arcname = None
+
+                        tar_handle.add(os.path.join(root, file), arcname=arcname)
+
         tar_handle.close()
 
     def cleanup(self):
         """
         Zips the aggregate results, and deletes files for cleanup
-
         """
-        self.clean_cnr_gzs()
-        self.clean_files(self.samp_AA_dct.values())
-        self.clean_files(self.samp_ckit_dct.values())
+        self.clean_dirs(self.samp_AA_dct.values())
+        # self.clean_files(self.samp_ckit_dct.values())
         print("Creating tar.gz...")
         self.tardir('./results', f'{self.output_name}.tar.gz')
-        shutil.rmtree('./results')
+        self.clean_dirs(['./results', DEST_ROOT]) # ./extracted_from_zips
 
     # def find_file(self, basename):
     #     """
@@ -308,15 +331,6 @@ class Aggregator():
     #                 return fp.replace('./results/', "")
     #
     #     return 'Not Provided'
-    
-    def string_to_list(self, string):
-        """
-        Converts a string representation of a list to a list.
-        """
-        if "|" in string:
-            return string.split("|")
-        else:
-            return string.strip('][').replace(" ", "").split(',')
 
     def json_modifications(self):
         """
@@ -339,7 +353,7 @@ class Aggregator():
                 if len(ref_genomes) > 1:
                     sys.stderr.write(str(ref_genomes) + "\n")
                     sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
-                                     "supports single-reference projects currently. Exiting.")
+                                     "supports single-reference projects currently. Exiting.\n")
                     sys.exit(1)
 
                 potential_str_lsts = [
@@ -347,11 +361,11 @@ class Aggregator():
                     'Oncogenes',
                     'All genes',
                 ]
-                for lists in potential_str_lsts:
+                for lname in potential_str_lsts:
                     try:
-                        sample_dct[lists] = self.string_to_list(sample_dct[lists])
+                        sample_dct[lname] = string_to_list(sample_dct[lname])
                     except:
-                        print(f'Feature: {lists} doesnt exist for sample: {sample_name}')
+                        print(f'Feature: {lname} doesnt exist for sample: {sample_name}')
 
                 # update each path in run.json by finding them in outputs folder
                 # separately for feature bed file because location is different
@@ -366,7 +380,7 @@ class Aggregator():
                         feat_file = feat_file.replace('./results/', "")
                         sample_dct['Feature BED file'] = feat_file
                     else:
-                        print(f'Feature: "Feature BED file" doesnt exist for sample: {sample_dct["Sample name"]}')
+                        print(f'Feature: "Feature BED file" {feat_file} doesnt exist for sample {sample_dct["Sample name"]}')
                         sample_dct['Feature BED file'] = "Not Provided"
 
                 else:
@@ -407,7 +421,7 @@ class Aggregator():
                             sample_dct[feature] = feat_file
 
                         else:
-                            print(f'Feature: "{feature}" doesn\'t exist for sample: {sample_dct["Sample name"]}')
+                            print(f'Feature: "{feature}" file doesn\'t exist for sample {sample_dct["Sample name"]}: {feat_file}')
                             sample_dct[feature] = "Not Provided"
 
                     else:
@@ -420,10 +434,13 @@ class Aggregator():
                 for dirfname, sdct in zip(dirs_of_interest, [self.samp_AA_dct, self.samp_ckit_dct]):
                     if sdct[sample_dct['Sample name']]:
                         orig_dir = sdct[sample_dct['Sample name']]
-                        tarf = orig_dir + ".tar.gz"
-                        self.tardir(orig_dir, tarf)
-                        sample_dct[dirfname] = tarf.replace('./results/', "")
+                        # clean .out and .cnr.gz files
+                        self.clean_by_suffix("*.out", orig_dir)
+                        self.clean_by_suffix("*.cnr.gz", orig_dir)
 
+                        tarf = orig_dir + ".tar.gz"
+                        self.tardir(orig_dir, tarf, keep_root=False)
+                        sample_dct[dirfname] = tarf.replace('./results/', "")
 
                     else:
                         sample_dct[dirfname] = "Not Provided"
@@ -432,19 +449,29 @@ class Aggregator():
             json.dump(dct, json_file, sort_keys=True, indent=2)
         json_file.close()
 
+        flattened_samples = []
+        for _,v in dct['runs'].items():
+            flattened_samples.extend(v)
 
-    def clean_cnr_gzs(self):
-        print("Removing raw copy number cnr.gz files to save space.")
-        cmd = f'find {OUTPUT_PATH} -name "*.cnr.gz" -exec rm {{}} \;'
-        print(cmd)
-        subprocess.call(cmd, shell=True)
+        aggregate = pd.DataFrame.from_records(flattened_samples)
+        aggregate.to_csv('./results/aggregated_results.csv')
+        aggregate.to_html('./results/aggregated_results.html')
 
+    def clean_by_suffix(self, suffix, dir):
+        if suffix and dir and not dir == "/" and not suffix == "*":
+            if not suffix.startswith("*"):
+                suffix = "*" + suffix
 
-    def clean_files(self, flist):
-        for f in flist:
-            if not f == "/":
-                cmd = f'rm -rf {f}'
-                subprocess.call(cmd, shell=True)
+            cmd = f'rm -f {dir}/{suffix}'
+            # try:
+            subprocess.call(cmd, shell=True)
+            # except FileNotFoundError:
+            #     pass
+
+    def clean_dirs(self, dlist):
+        for d in dlist:
+            if d and not d == "/":
+                shutil.rmtree(d)
 
 
 # TODO: VALIDATE IS NEVER USED!

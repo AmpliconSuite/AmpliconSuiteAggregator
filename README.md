@@ -22,13 +22,13 @@ Aggregates the results from AmpliconSuite
     - Reference genome used for Amplicon Architect results in the input. 
 
 ## Docker
-  - Uses Docker image: genepattern/amplicon-suite-aggregator:v2.3
+  - Uses Docker image: genepattern/amplicon-suite-aggregator
   - To send results to Amplicon Repository directly from your local machine, follow these steps:
       1. Create an `input_list.txt` file in this format where each line is a filepath to compressed aa_results:
          <img width="269" alt="image" src="https://github.com/genepattern/AmpliconSuiteAggregator/assets/43209173/cca8c8af-a58f-4290-a8a8-4dbe82e5941e">
 
 
-      2. `docker pull genepattern/amplicon-suite-aggregator:v2.3`
+      2. `docker pull genepattern/amplicon-suite-aggregator`
       3. `docker run --rm -it -v PATH/TO/INPUTS/FOLDER:/inputs/ genepattern/amplicon-suite-aggregator:v2.3 python3 /opt/genepatt/AmpliconSuiteAggregator.py -flist /path/to/input_list.txt -u YOUR_AMPLICON_REPOSITORY_EMAIL -t`
       4. Log into Amplicon Repository, you should see a new project with the name "Job_*****". 
 

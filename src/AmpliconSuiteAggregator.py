@@ -28,7 +28,7 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-flist", "--filelist", type=str, help="Text file with files to use (one per line)")
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
-    parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
+    parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="output")
     parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository", required = False)
     parser.add_argument('-t', '--testing', action = 'store_true', required = False)
     parser.add_argument("-c", "--run_classifier",type = str, help = "If 'Yes', then run Amplicon Classifier on AA results. \

@@ -14,7 +14,7 @@ def post_package(fp, data, user):
             'private': boolean
             'project_members': list}
     '''
-    homepage = 'https://dev.ampliconrepository.org/'
+    homepage = 'https://ampliconrepository.org/'
     session = requests.Session()
     cookie = session.get(homepage)
     csrf_token = cookie.cookies.get_dict()['csrftoken']
@@ -25,7 +25,7 @@ def post_package(fp, data, user):
     }
 
     files = {'file': open(fp, 'rb')}
-    upload_url = 'https://dev.ampliconrepository.org/upload_api/'
+    upload_url = f'{homepage}/upload_api/'
 
     response = requests.post(upload_url,data = data, files = files)
     print(response.status_code)
@@ -37,7 +37,7 @@ def post_package(fp, data, user):
 #     ## to do one aggregation
 #     # python3 /module/src/AmpliconSuiteAggregator.py -flist /module/gpunit/inputs/input_list.txt
 
-#     homepage = 'http://127.0.0.1:8000'
+#     homepage = 'https://dev.ampliconrepository.org'
 #     ## get cookie first
 #     session = requests.Session()
 #     cookie = session.get(homepage)
@@ -53,7 +53,8 @@ def post_package(fp, data, user):
 #         'Content-Type':'multipart/form-data',
 #         'X-CSRFToken':csrf_token,
 #     }
-#     data = {'project_name': 'testPOST_Private_Project_with_s3adjustment',
+    
+#     data = {'project_name': 'testPOST_Private_Project_with_s3adjustment_todev',
 #             'description':'a test POST request to API',
 #             'private':True,
 #             'project_members':['edh021@ucsd.edu']}

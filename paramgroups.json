@@ -1,0 +1,21 @@
+[
+    {
+        "name": "Inputs",
+        "description": "List of Common Inputs",
+        "hidden": false,
+        "parameters": [
+            "Amplicon.Architect.Results",
+            "project_name",
+            "Amplicon.Repository.Email"
+        ]
+    },
+    {
+        "name": "Amplicon Classifier Inputs",
+        "description": "Inputs for Amplicon Classifier settings",
+        "hidden": false,
+        "parameters": [
+            "run.amplicon.classifier",
+            "reference.genome"
+        ]
+    }
+]

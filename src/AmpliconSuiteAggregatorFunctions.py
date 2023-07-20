@@ -45,14 +45,28 @@ def string_to_list(string):
         return string.strip('][').replace(" ", "").split(',')
 
 
-class Aggregator():
-    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path):
+def read_name_remap(name_remap_file):
+    name_remap = {}
+    if name_remap_file:
+        with open(name_remap_file) as infile:
+            for l in infile:
+                fields = l.rstrip().rsplit()
+                name_remap[fields[0]] = fields[1]
+
+    print("Name remap has " + str(len(name_remap)) + " keys")
+    return name_remap
+
+
+class Aggregator:
+    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path, name_remap_file=None):
         self.zip_paths = filelist
         self.root = root
         self.output_name = output_name
         self.run_classifier = run_classifier
         self.ref = ref
         self.py3_path = py3_path
+        self.name_remap = read_name_remap(name_remap_file)
+
         self.unzip()
         if self.run_classifier == "Yes":
             self.run_amp_classifier()
@@ -103,11 +117,13 @@ class Aggregator():
                 print("The zip: " + fp + " ran into an error when unzipping.")
                 print(e)
 
-        ## find all nested zips and extract them. 
+        ## find all nested zips and extract them.
+        print("Finding compressed files...")
         for root, dirs, files in os.walk(DEST_ROOT):
             for file in files:
-                fp = os.path.join(root, file)
-                self.unzip_file(fp, DEST_ROOT)
+                if file.endswith(".tar.gz") or file.endswith(".zip"):
+                    fp = os.path.join(root, file)
+                    self.unzip_file(fp, DEST_ROOT)
 
         ## moving required AA files to correct destination
         if not os.path.exists(OUTPUT_PATH):
@@ -118,6 +134,8 @@ class Aggregator():
 
         ## find samples and move files
         # samples = []
+        aa_samples_found = 0
+        print("Crawling files for AA, classification, and CN data...")
         for root, dirs, files in os.walk(DEST_ROOT, topdown = True):
             for dir in dirs: 
                 fp = os.path.join(root, dir)
@@ -128,10 +146,11 @@ class Aggregator():
                     if any([x.endswith("_summary.txt") for x in os.listdir(fp)]):
                         print(f'Moving AA results to {OUTPUT_PATH}')
                         os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
+                        aa_samples_found+=1
+                        if aa_samples_found % 100 == 0:
+                            print("Crawled through " + str(aa_samples_found) + " AA results...")
 
                 if fp.endswith("_cnvkit_output"):
-                    # tarname = os.path.dirname(fp) + ".tar.gz"
-                    # self.tardir(os.path.dirname(fp), tarname)
                     print(f'Moving cnvkit_outputs to {OUTPUT_PATH}')
                     os.system(f'mv -vf {os.path.dirname(fp)} {OUTPUT_PATH}')
 
@@ -144,6 +163,7 @@ class Aggregator():
 
     def locate_dirs_and_metadata_jsons(self):
         # post-move identification of AA and CNVKit files:
+        print("Locating metadata...")
         for root, dirs, files in os.walk(OUTPUT_PATH, topdown = True):
             for dir in dirs:
                 fp = os.path.join(root, dir)
@@ -264,6 +284,7 @@ class Aggregator():
         sample_to_ac_dir = {}
         sample_num = 1
         # aggregate results
+        print("Aggregating results into tables")
         for res_dir in [OUTPUT_PATH, OTHER_FILES]:
             for root, dirs, files in os.walk(res_dir, topdown = False):
                 for name in files:
@@ -345,8 +366,11 @@ class Aggregator():
         json_file.close()
 
         ref_genomes = set()
+        processed_feat_count = 0
+        print("Forming JSONs...")
         for sample in dct['runs'].keys():
             for sample_dct in dct['runs'][sample]:
+                processed_feat_count+=1
                 # updating string of lists to lists
                 sample_name = sample_dct["Sample name"]
                 ref_genomes.add(sample_dct["Reference version"])
@@ -444,6 +468,16 @@ class Aggregator():
 
                     else:
                         sample_dct[dirfname] = "Not Provided"
+
+                # rename the sample if user specifies
+                if sample_name in self.name_remap:
+                    # print("Renaming sample " + sample_name + " to " + self.name_remap[sample_name])
+                    sample_dct['Sample name'] = self.name_remap[sample_name]
+                elif self.name_remap and sample_name not in self.name_remap:
+                    sys.stderr.write("Could not rename sample: " + sample_name + "\n")
+
+                if processed_feat_count % 100 == 0:
+                    print("Processed " + str(processed_feat_count) + " features...")
 
         with open('./results/run.json', 'w') as json_file:
             json.dump(dct, json_file, sort_keys=True, indent=2)

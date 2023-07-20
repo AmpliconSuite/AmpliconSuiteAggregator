@@ -1,10 +1,13 @@
+#!/usr/bin/env python3
+
 import argparse
 import socket
 
 from AmpliconSuiteAggregatorFunctions import *
 from ASA_POST import * 
 
-__version__ = "1.8"
+__version__ = "2.1"
+
 
 def get_zip_paths(filelist_fp):
     """
@@ -29,12 +32,14 @@ if __name__ == "__main__":
     group.add_argument("-flist", "--filelist", type=str, help="Text file with files to use (one per line)")
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix", default="aggregated")
-    parser.add_argument("-u", "--username", type = str, help = "Username for Amplicon Repository", required = False)
-    parser.add_argument('-t', '--testing', action = 'store_true', required = False)
-    parser.add_argument("-c", "--run_classifier",type = str, help = "If 'Yes', then run Amplicon Classifier on AA results. \
+    parser.add_argument("-u", "--username", type=str, help = "Username for Amplicon Repository", required=False)
+    # parser.add_argument('-t', '--testing', action = 'store_true', required = False)  # JL: This seems to be unused
+    parser.add_argument("--name_map", type=str, help="A two column file providing the current identifier for each sample (col 1)"
+                        " and a replacement name (col 2). Enables batch renaming of samples.")
+    parser.add_argument("-c", "--run_classifier",type=str, help = "If 'Yes', then run Amplicon Classifier on AA results. \
                         If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.")
-    parser.add_argument("-s", "--server", type = str, help = "Which server to send results to. Accepts 'dev' or 'prod'. ",
-                        choices = ['dev', 'prod'])
+    parser.add_argument("-s", "--server", type=str, help = "Which server to send results to. Accepts 'dev' or 'prod'. ",
+                        choices =['dev', 'prod'])
     parser.add_argument("--ref", help="Reference genome name used for alignment, one of hg19, GRCh37, GRCh38, GRCh38_viral, or mm10",
                         choices=["hg19", "GRCh37", "GRCh38", "GRCh38_viral", "mm10"])
     parser.add_argument("--python3_path", help="Specify a custom path to a python3 executable, assumes system path by default",
@@ -58,7 +63,8 @@ if __name__ == "__main__":
 
     root = '.'
     print("AmpliconSuiteAggregator version " + __version__)
-    aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path)
+    aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path,
+                           args.name_map)
     output_fp = args.output_name + ".tar.gz"
 
     if args.username:

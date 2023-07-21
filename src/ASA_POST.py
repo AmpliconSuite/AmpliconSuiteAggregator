@@ -1,9 +1,9 @@
 ## This script will allow the aggregator module to POST files to Amplicon Repository
 import requests
-import os
+import sys
 
 
-def post_package(fp, data, user):
+def post_package(fp, data, server):
     '''
     Creates a package to post to Amplicon Repository
 
@@ -14,7 +14,13 @@ def post_package(fp, data, user):
             'private': boolean
             'project_members': list}
     '''
-    homepage = 'https://ampliconrepository.org/'
+    if server == 'prod':
+        homepage = 'https://ampliconrepository.org'
+    elif server == 'dev':
+        homepage = 'https://dev.ampliconrepository.org'
+    else:
+        sys.stderr.write("Unrecognized server option: " + server + "\n")
+        sys.exit(1)
     session = requests.Session()
     cookie = session.get(homepage)
     csrf_token = cookie.cookies.get_dict()['csrftoken']

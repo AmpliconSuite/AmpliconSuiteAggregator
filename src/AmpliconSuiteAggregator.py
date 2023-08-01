@@ -61,8 +61,7 @@ if __name__ == "__main__":
 
     root = '.'
     print("AmpliconSuiteAggregator version " + __version__)
-    aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path,
-                           args.name_map)
+    aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path)
     output_fp = args.output_name + ".tar.gz"
 
     if args.username:

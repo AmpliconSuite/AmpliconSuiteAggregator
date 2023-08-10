@@ -6,7 +6,7 @@ import socket
 from AmpliconSuiteAggregatorFunctions import *
 from ASA_POST import * 
 
-__version__ = "2.2"
+__version__ = "3.1"
 
 
 def get_zip_paths(filelist_fp):
@@ -38,6 +38,8 @@ if __name__ == "__main__":
     parser.add_argument("--upload_only", type=str, help="If 'Yes', then skip aggregation and classification and upload "
                         "the file as is. Note: the file must already be aggregated to successfully upload.",
                         choices=['Yes', ])
+    parser.add_argument("--name_map", type=str, help="A two column file providing the current identifier for each sample (col 1)"
+                        " and a replacement name (col 2). Enables batch renaming of samples.")
     parser.add_argument("-c", "--run_classifier",type=str, help="If 'Yes', then run Amplicon Classifier on AA results. \
                         If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.",
                         choices=['Yes', ])

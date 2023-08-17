@@ -18,6 +18,8 @@ def post_package(fp, data, server):
         homepage = 'https://ampliconrepository.org'
     elif server == 'dev':
         homepage = 'https://dev.ampliconrepository.org'
+    elif server == 'local-debug':
+        homepage = 'http://127.0.0.1:8000'
     else:
         sys.stderr.write("Unrecognized server option: " + server + "\n")
         sys.exit(1)

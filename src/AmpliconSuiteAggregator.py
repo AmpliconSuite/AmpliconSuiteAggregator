@@ -43,8 +43,9 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--run_classifier",type=str, help="If 'Yes', then run Amplicon Classifier on AA results. \
                         If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.",
                         choices=['Yes', ])
-    parser.add_argument("-s", "--server", type=str, help="Which server to send results to. Accepts 'dev' or 'prod'. ",
-                        choices=['dev', 'prod'])
+    parser.add_argument("-s", "--server", type=str, help="Which server to send results to. Accepts 'dev' or 'prod' or 'local-debug'."
+                        " 'prod' is what most users want. 'dev' and 'local-debug' are for development and debugging",
+                        choices=['dev', 'prod', 'local-debug'])
     parser.add_argument("--ref", type=str, help="Reference genome name used for alignment, one of hg19, GRCh37, GRCh38, GRCh38_viral, or mm10",
                         choices=["hg19", "GRCh37", "GRCh38", "GRCh38_viral", "mm10"])
     parser.add_argument("--python3_path", type=str, help="Specify a custom path to a python3 executable, assumes system path by default",

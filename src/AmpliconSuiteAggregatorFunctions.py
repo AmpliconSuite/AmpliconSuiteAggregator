@@ -57,6 +57,39 @@ def read_name_remap(name_remap_file):
     return name_remap
 
 
+def unzip_file(fp, dest_root):
+    """
+    unzips file based on zip type
+    """
+    try:
+        if fp.endswith(".tar.gz"):
+            zip_name = os.path.basename(fp).replace(".tar.gz", "")
+            destination = f'{dest_root}/{zip_name}'
+            with tarfile.open(fp, 'r') as output_zip:
+                output_zip.extractall(destination)
+            output_zip.close()
+        elif fp.endswith(".zip"):
+            zip_name = os.path.basename(fp).replace(".zip", "")
+            destination = f'{dest_root}/{zip_name}'
+            with zipfile.ZipFile(fp, 'r') as zip_ref:
+                zip_ref.extractall(destination)
+            zip_ref.close()
+
+    except Exception as e:
+        print(e)
+
+
+def clean_dirs(dlist):
+    for d in dlist:
+        if d and not d == "/":
+            shutil.rmtree(d)
+
+
+def check_run_json(dest_root, bname):
+    runj_path = os.path.join(dest_root, bname, 'results', 'run.json')
+    return os.path.exists(runj_path)
+
+
 class Aggregator:
     def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path, name_remap_file=None):
         self.zip_paths = filelist
@@ -82,27 +115,6 @@ class Aggregator:
         # self.move_files()
         self.cleanup()
 
-    def unzip_file(self, fp, dest_root):
-        """
-        unzips file based on zip type
-        """
-        try:
-            if fp.endswith(".tar.gz"):
-                zip_name = os.path.basename(fp).replace(".tar.gz", "")
-                destination = f'{dest_root}/{zip_name}'
-                with tarfile.open(fp, 'r') as output_zip:
-                    output_zip.extractall(destination)
-                output_zip.close()
-            elif fp.endswith(".zip"):
-                zip_name = os.path.basename(fp).replace(".zip", "")
-                destination = f'{dest_root}/{zip_name}'
-                with zipfile.ZipFile(fp, 'r') as zip_ref:
-                    zip_ref.extractall(destination)
-                zip_ref.close()
-
-        except Exception as e:
-            print(e)
-
     def unzip(self):
         """
         Unzips the zip files, and get directories for files within
@@ -111,7 +123,7 @@ class Aggregator:
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
-                self.unzip_file(fp, DEST_ROOT)
+                unzip_file(fp, DEST_ROOT)
 
             except Exception as e:
                 print("The zip: " + fp + " ran into an error when unzipping.")
@@ -123,7 +135,7 @@ class Aggregator:
             for file in files:
                 if file.endswith(".tar.gz") or file.endswith(".zip"):
                     fp = os.path.join(root, file)
-                    self.unzip_file(fp, DEST_ROOT)
+                    unzip_file(fp, DEST_ROOT)
 
         ## moving required AA files to correct destination
         if not os.path.exists(OUTPUT_PATH):
@@ -335,11 +347,11 @@ class Aggregator:
         """
         Zips the aggregate results, and deletes files for cleanup
         """
-        self.clean_dirs(self.samp_AA_dct.values())
+        clean_dirs(self.samp_AA_dct.values())
         # self.clean_files(self.samp_ckit_dct.values())
         print("Creating tar.gz...")
         self.tardir('./results', f'{self.output_name}.tar.gz')
-        self.clean_dirs(['./results', DEST_ROOT]) # ./extracted_from_zips
+        clean_dirs(['./results', DEST_ROOT]) # ./extracted_from_zips
 
     # def find_file(self, basename):
     #     """
@@ -501,11 +513,6 @@ class Aggregator:
             subprocess.call(cmd, shell=True)
             # except FileNotFoundError:
             #     pass
-
-    def clean_dirs(self, dlist):
-        for d in dlist:
-            if d and not d == "/":
-                shutil.rmtree(d)
 
 
 # TODO: VALIDATE IS NEVER USED!

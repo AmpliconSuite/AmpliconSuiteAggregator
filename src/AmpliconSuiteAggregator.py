@@ -42,7 +42,7 @@ if __name__ == "__main__":
                         " and a replacement name (col 2). Enables batch renaming of samples.")
     parser.add_argument("-c", "--run_classifier",type=str, help="If 'Yes', then run Amplicon Classifier on AA results. \
                         If Amplicon Classifier results are already included in inputs, they will be removed and re-classified.",
-                        choices=['Yes', ])
+                        choices=['Yes','No' ])
     parser.add_argument("-s", "--server", type=str, help="Which server to send results to. Accepts 'dev' or 'prod' or 'local-debug'."
                         " 'prod' is what most users want. 'dev' and 'local-debug' are for development and debugging",
                         choices=['dev', 'prod', 'local-debug'])

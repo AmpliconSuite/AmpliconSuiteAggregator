@@ -17,5 +17,14 @@
             "run.amplicon.classifier",
             "reference.genome"
         ]
+    },
+    {
+        "name": "Advanced Parameters",
+        "description": "",
+        "hidden": false,
+        "parameters": [
+            "upload.only",
+            "name.map"
+        ]
     }
 ]

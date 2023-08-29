@@ -1,16 +1,16 @@
 #AmpliconSuiteAggregator
-#Wed Jul 19 02:57:23 UTC 2023
+#Mon Aug 28 11:22:51 UTC 2023
 JVMLevel=
-LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:1.9
+LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:1.10
 author=Edwin Huang;Mesirov Lab
-commandLine=python3 /opt/genepatt/AmpliconSuiteAggregator.py -s dev --filelist <Amplicon.Architect.Results> --output_name <project_name> <Amplicon.Repository.Email>  <run.amplicon.classifier> <reference.genome> 
+commandLine=python3 /opt/genepatt/AmpliconSuiteAggregator.py -s dev --filelist <Amplicon.Architect.Results> --output_name <project_name> <Amplicon.Repository.Email> --upload_only <upload.only> --server dev <run.amplicon.classifier> <reference.genome> <name.map>
 cpuType=any
 description=Aggregates individual AmpliconSuite runs. Takes in zip files (or .tar.gz) and aggregates the results. Results can directly be used to load onto AmpliconRepository. 
 documentationUrl=https\://github.com/genepattern/AmpliconSuiteAggregator/blob/develop/docs/v1/index.md
 fileFormat=
 job.cpuCount=1
-job.docker.image=genepattern/amplicon-suite-aggregator\:v2.3
-job.memory=2GB
+job.docker.image=genepattern/amplicon-suite-aggregator\:v2.4
+job.memory=4GB
 job.walltime=01\:00\:00
 language=any
 name=AmpliconSuiteAggregator
@@ -80,6 +80,32 @@ p5_prefix=--ref
 p5_prefix_when_specified=--ref 
 p5_type=java.lang.String
 p5_value=GRCh38\=GRCh38;hg38\=hg38;GRCh37\=GRCh37;hg19\=hg19;mm10\=mm10;GRCm38\=GRCm38;GRCh38_viral\=GRCh38_viral
+p6_MODE=
+p6_TYPE=TEXT
+p6_default_value=No
+p6_description=Upload only mode. Will skip aggregator and upload to server as is. 
+p6_fileFormat=
+p6_flag=--upload_only
+p6_name=upload.only
+p6_numValues=0..1
+p6_optional=on
+p6_prefix=
+p6_prefix_when_specified=
+p6_type=java.lang.String
+p6_value=No\=No;Yes\=Yes
+p7_MODE=IN
+p7_TYPE=FILE
+p7_default_value=
+p7_description=A two column file providing current identifier for each sample (col 1), and a replacement name (col 2). 
+p7_fileFormat=
+p7_flag=--name_map
+p7_name=name.map
+p7_numValues=0..1
+p7_optional=on
+p7_prefix=--name_map
+p7_prefix_when_specified=--name_map
+p7_type=java.io.File
+p7_value=
 privacy=public
 publicationDate=07/12/2022 13\:27 
 quality=production
@@ -87,4 +113,4 @@ src.repo=https\://github.com/genepattern/AmpliconSuiteAggregator
 taskDoc=
 taskType=
 userid=edwin5588
-version=Added new parameter for AmpRepo support, Amp classifier support
+version=New docker, new arguments, new features for aggregator 

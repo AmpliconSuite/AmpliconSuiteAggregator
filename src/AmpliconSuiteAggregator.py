@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # parser.add_argument('-t', '--testing', action = 'store_true', required = False)  # JL: This seems to be unused
     parser.add_argument("--upload_only", type=str, help="If 'Yes', then skip aggregation and classification and upload "
                         "the file as is. Note: the file must already be aggregated to successfully upload.",
-                        choices=['Yes', ])
+                        choices=['Yes', 'No'])
     parser.add_argument("--name_map", type=str, help="A two column file providing the current identifier for each sample (col 1)"
                         " and a replacement name (col 2). Enables batch renaming of samples.")
     parser.add_argument("-c", "--run_classifier",type=str, help="If 'Yes', then run Amplicon Classifier on AA results. \
@@ -57,11 +57,11 @@ if __name__ == "__main__":
         sys.stderr.write("--ref must be specified if -c/--run_classifier is set!\n")
         sys.exit(1)
 
-    if args.upload_only and not args.username:
+    if (args.upload_only == "Yes") and not args.username:
         sys.stderr.write("-u/--username must be specified if --upload_only is set!\n")
         sys.exit(1)
 
-    if args.username and not args.server:
+    if (args.username != "") and not args.server:
         sys.stderr.write("-s/--server must be specified if -u/--username is set!\n")
         sys.exit(1)
 
@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     root = '.'
     print("AmpliconSuiteAggregator version " + __version__)
-    if not args.upload_only:
+    if args.upload_only == 'No':
         # Do the aggregation
         aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path,
                                args.name_map)

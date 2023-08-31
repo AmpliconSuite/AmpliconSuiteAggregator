@@ -1,6 +1,8 @@
 ## This script will allow the aggregator module to POST files to Amplicon Repository
 import requests
 import sys
+import os
+
 
 
 def post_package(fp, data, server):
@@ -45,7 +47,7 @@ def post_package(fp, data, server):
 #     ## to do one aggregation
 #     # python3 /module/src/AmpliconSuiteAggregator.py -flist /module/gpunit/inputs/input_list.txt
 
-#     homepage = 'https://ampliconrepository.org'
+#     homepage = 'http://127.0.0.1:8000'
 #     ## get cookie first
 #     session = requests.Session()
 #     cookie = session.get(homepage)
@@ -53,8 +55,8 @@ def post_package(fp, data, server):
 #     print(csrf_token)
 
 
-#     upload_file = os.path.join('/Users/edwinhuang/Downloads/test_POST_from_gpBeta.tar.gz')
-
+#     upload_file = os.path.join(r'/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/test.tar.gz')
+#     # upload_file = '/Users/edwinhuang/Downloads/whynot.tar.gz'
 #     upload_url = f'{homepage}/upload_api/'
 
 #     headers = {
@@ -62,14 +64,14 @@ def post_package(fp, data, server):
 #         'X-CSRFToken':csrf_token,
 #     }
     
-#     data = {'project_name': 'testPOST_Private_Project_with_s3adjustment_to_prod',
+#     data = {'project_name': 'Post 2',
 #             'description':'a test POST request to API',
 #             'private':True,
 #             'project_members':['edh021@ucsd.edu']}
     
 #     files = {'file': open(upload_file, 'rb')}
 
-#     response = requests.post(upload_url,data = data, files = files)
+#     response = requests.post(upload_url,data = data, files = files, verify = False)
 #     print(response.status_code)
 
 

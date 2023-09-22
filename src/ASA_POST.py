@@ -2,7 +2,7 @@
 import requests
 import sys
 import os
-
+import uuid
 
 
 def post_package(fp, data, server):
@@ -28,18 +28,35 @@ def post_package(fp, data, server):
     session = requests.Session()
     cookie = session.get(homepage)
     csrf_token = cookie.cookies.get_dict()['csrftoken']
-
-    headers = {
-        'Content-Type':'multipart/form-data',
-        'X-CSRFToken':csrf_token,
-    }
-
-    files = {'file': open(fp, 'rb')}
+    upload_file = os.path.join(fp)
     upload_url = f'{homepage}/upload_api/'
+    generate_uuid = uuid.uuid4().hex
+    print(generate_uuid)
 
-    response = requests.post(upload_url,data = data, files = files)
-    print(response.status_code)
-    print(response.text)
+
+    if os.path.getsize(upload_file) > 1000000000:
+        ### if file is ALMOST greater than 2GB, split it up into multiple pieces
+        os.system(f'mkdir -p {generate_uuid}')
+        ## split into 200mb chunks for POST
+        os.system(f'split -b 200m {upload_file} ./{generate_uuid}/POST_part_')
+        last_part = os.listdir(f'./{generate_uuid}')[-1]
+        data['project_name'] = f'MULTIPART__{generate_uuid}__{last_part}'
+        
+        for file in os.listdir(f'./{generate_uuid}'):
+            fp = os.path.join(f'./{generate_uuid}', file)
+            print(fp)
+            files = {'file': open(fp, 'rb')}
+
+            response = requests.post(upload_url,data = data, files = files)
+            print(response.status_code)
+
+            os.remove(fp)
+    else:
+        files = {'file': open(upload_file, 'rb')}
+        response = requests.post(upload_url,data = data, files = files)
+        print(response.status_code)
+
+
 
 
 
@@ -55,23 +72,60 @@ def post_package(fp, data, server):
 #     print(csrf_token)
 
 
-#     upload_file = os.path.join(r'/Users/edwinhuang/Documents/GitHub/AmpliconSuiteAggregator/test.tar.gz')
+#     upload_file = os.path.join('/Users/edwinhuang/Desktop/AA_159_testing/aggregated_results/091123_51p3MBproj.tar.gz')
 #     # upload_file = '/Users/edwinhuang/Downloads/whynot.tar.gz'
 #     upload_url = f'{homepage}/upload_api/'
 
 #     headers = {
-#         'Content-Type':'multipart/form-data',
-#         'X-CSRFToken':csrf_token,
+#         # 'Content-Type':'multipart/form-data',
+#         'Content-Length':'100',
+#         # 'X-CSRFToken':csrf_token,
+#         # 'Accept-Encoding': 'gzip, deflate, br',
 #     }
-    
-#     data = {'project_name': 'Post 2',
+#     print(os.path.getsize(upload_file))
+#     print(os.path.getsize('/Users/edwinhuang/Desktop/AA_159_testing/aggregated_results/091123_1p99gb_api.tar.gz'))
+#     generate_uuid = uuid.uuid4().hex
+#     print(generate_uuid)
+#     data = {'project_name': f'TEST_NO_API_ID',
 #             'description':'a test POST request to API',
 #             'private':True,
 #             'project_members':['edh021@ucsd.edu']}
     
-#     files = {'file': open(upload_file, 'rb')}
+#     # files = {'file': open(upload_file, 'rb')}
+    
+#     ## 1. create multiple tar files, for each one, post individually to website
+#     ## server side: if project name is the same and contains the keyword *MULTIPART* 
+#     ## then save the file to the same directory, and create a new 
 
-#     response = requests.post(upload_url,data = data, files = files, verify = False)
-#     print(response.status_code)
+
+#     # req = requests.Request('POST', url = upload_url, data = data, files = files)
+#     # prep = session.prepare_request(req)
+#     # prep.headers.update({'Content-Length':'1000'})
+
+#     if os.path.getsize(upload_file) > 1000000000:
+#         ### if file is ALMOST greater than 1 GB
+#         os.system(f'mkdir -p {generate_uuid}')
+#         ## split into 200mb chunks for POST
+#         os.system(f'split -b 100m {upload_file} ./{generate_uuid}/POST_part_')
+#         last_part = os.listdir(f'./{generate_uuid}')[-1]
+#         data['project_name'] = data['project_name'] + f"__{last_part}"
+        
+#         for file in os.listdir(f'./{generate_uuid}'):
+#             fp = os.path.join(f'./{generate_uuid}', file)
+#             print(fp)
+#             files = {'file': open(fp, 'rb')}
+
+#             response = requests.post(upload_url,data = data, files = files)
+#             print(response.status_code)
+
+#             os.remove(fp)
+#     else:
+#         files = {'file': open(upload_file, 'rb')}
+#         response = requests.post(upload_url,data = data, files = files)
+#         print(response.status_code)
+
+
+
+
 
 

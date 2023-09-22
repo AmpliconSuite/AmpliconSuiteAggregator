@@ -82,7 +82,10 @@ def unzip_file(fp, dest_root):
 def clean_dirs(dlist):
     for d in dlist:
         if d and not d == "/":
-            shutil.rmtree(d)
+            try:
+                shutil.rmtree(d)
+            except Exception as e:
+                print(e)
 
 
 def check_run_json(dest_root, bname):

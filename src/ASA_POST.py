@@ -51,6 +51,9 @@ def post_package(fp, data, server):
             print(response.status_code)
 
             os.remove(fp)
+
+        print("Large projects may take >30 minutes to be unpacked and registered after upload to the site.")
+
     else:
         files = {'file': open(upload_file, 'rb')}
         response = requests.post(upload_url,data = data, files = files)

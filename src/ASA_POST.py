@@ -40,7 +40,8 @@ def post_package(fp, data, server):
         ## split into 200mb chunks for POST
         os.system(f'split -b 200m {upload_file} ./{generate_uuid}/POST_part_')
         last_part = os.listdir(f'./{generate_uuid}')[-1]
-        data['project_name'] = f'MULTIPART__{generate_uuid}__{last_part}'
+        actual_proj_name = data['project_name']
+        data['project_name'] = f'MULTIPART__{generate_uuid}__{last_part}__{actual_proj_name}'
         
         for file in os.listdir(f'./{generate_uuid}'):
             fp = os.path.join(f'./{generate_uuid}', file)

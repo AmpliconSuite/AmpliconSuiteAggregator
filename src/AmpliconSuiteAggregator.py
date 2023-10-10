@@ -127,3 +127,5 @@ if __name__ == "__main__":
 
             print(f'Creating project for user: {user}')
             post_package(output_fp, data, args.server)
+
+        print("Upload completed. Site will upack and register files.")

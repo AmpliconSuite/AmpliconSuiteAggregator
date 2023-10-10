@@ -48,13 +48,16 @@ def post_package(fp, data, server):
             print(fp)
             files = {'file': open(fp, 'rb')}
 
-            response = requests.post(upload_url,data = data, files = files)
+            response = requests.post(upload_url, data = data, files = files)
             print(response.status_code)
 
             os.remove(fp)
+
+        os.rmdir(f'./{generate_uuid}')
+
     else:
         files = {'file': open(upload_file, 'rb')}
-        response = requests.post(upload_url,data = data, files = files)
+        response = requests.post(upload_url, data = data, files = files)
         print(response.status_code)
 
 

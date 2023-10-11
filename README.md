@@ -9,7 +9,8 @@ Aggregates the results from AmpliconSuite
   - Result file (in .tar.gz) is the aggregated results of all individual AmpliconSutie runs. It can be directly loaded onto AmpliconRepository.
   - Can also take additional files along with the upload, provided the directory they are in contains a file named `AUX_DIR`.
     
-## Parameters as shown on GP server
+## Parameters available on GenePattern Server
+  - Available at: https://genepattern.ucsd.edu/gp/pages/index.jsf?lsid=urn:lsid:genepattern.org:module.analysis:00429:4.1
   - *Amplicon Architect Results* (required)
     - Compressed (.tar.gz, .zip) files of the results from individual or grouped Amplicon Architect runs.
   - *project_name* (required)
@@ -20,6 +21,10 @@ Aggregates the results from AmpliconSuite
     - Option for users to re-run Amplicon Classifier.
   - *reference genome*
     - Reference genome used for Amplicon Architect results in the input.
+  - *upload only*
+    - If 'Yes', then skip aggregation / classification and upload file to AmpliconRepository as is.
+  - *name map*
+    - A two column file providing the current identifier for each sample (col 1) and a replacement name (col 2). Enables batch renaming of samples.
 
 
 ## Installation
@@ -52,16 +57,20 @@ Aggregates the results from AmpliconSuite
 
 ## How to run
   - If using local CLI:
-    -  Running aggregator: `python3 /path/to/AmpliconSuiteAggregator/path/src/AmpliconSuiteAggregator.py options`
-    -  Using API to upload directly to AmpliconRepository **without aggregation** : `python3 /path/to/AmpliconSuiteAggregator/path/src/AmpliconSuiteAggregator.py --files /path/to/aggregated/file.tar.gz -o projname -u your.amplicon.repository.username@gmail.com --upload_only Yes -s prod`
+    -  Running aggregator: `python3 /path/to/AmpliconSuiteAggregator/path/src/AmpliconSuiteAggregator.py **options**`
+    -  Using API to upload directly to AmpliconRepository **without aggregation**: `python3 /path/to/AmpliconSuiteAggregator/path/src/AmpliconSuiteAggregator.py --files /path/to/aggregated/file.tar.gz -o projname -u your.amplicon.repository.username@gmail.com --upload_only Yes -s prod`
+        -  Log into Amplicon Repository, you should see a new project with the output prefix you specified. 
 
   - If using Docker:
-  -   - To run aggregator: 
+    - To  Running aggregator: 
         1. `docker run --rm -it -v PATH/TO/INPUTS/FOLDER:/inputs/ genepattern/amplicon-suite-aggregator python3 /opt/genepatt/AmpliconSuiteAggregator.py **options**`
-        2. 
-    - To send results to Amplicon Repository directly from your local machine using the API, follow these steps:
+    - Using API to upload directly to AmpliconRepository **without aggregation**:
         1. `docker run --rm -it -v PATH/TO/INPUTS/FOLDER:/inputs/ genepattern/amplicon-suite-aggregator python3 /opt/genepatt/AmpliconSuiteAggregator.py -flist /path/to/input_list.txt -u YOUR_AMPLICON_REPOSITORY_EMAIL -o projname -u your.amplicon.repository.username@gmail.com --upload_only Yes -s prod`
         2. Log into Amplicon Repository, you should see a new project with the output prefix you specified. 
   
 ## Programming Language
   - Python
+
+## Contact
+For any issues
+  - Edwin Huang, edh021@cloud.ucsd.edu

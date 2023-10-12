@@ -30,12 +30,13 @@ Aggregates the results from AmpliconSuite
 ## Installation
   - Option 1: Git Clone
     - Step 1: `git clone https://github.com/genepattern/AmpliconSuiteAggregator.git`
+    - Step 2: Install python package dependencies from list below.
     - **If running into dependency issues, please use the docker methods.** 
   - Option 2: Docker
     - Step 1: `docker pull genepattern/amplicon-suite-aggregator`
 
 ## Dependencies
-  - List of dependencies used: intervaltree, matplotlib, numpy, pandas, Pillow, requests, scipy, urllib3           
+  - List of python package dependencies used: intervaltree, matplotlib, numpy, pandas, Pillow, requests, scipy, urllib3           
 
 ## Options when running locally
 ### Amplicon Suite Aggregator related options

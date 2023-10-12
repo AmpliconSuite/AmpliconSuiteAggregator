@@ -1,7 +1,7 @@
 #AmpliconSuiteAggregator
-#Mon Aug 28 11:22:51 UTC 2023
+#Thu Oct 12 10:25:06 PDT 2023
 JVMLevel=
-LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:1.10
+LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:5
 author=Edwin Huang;Mesirov Lab
 commandLine=python3 /opt/genepatt/AmpliconSuiteAggregator.py -s dev --filelist <Amplicon.Architect.Results> --output_name <project_name> <Amplicon.Repository.Email> --upload_only <upload.only> --server dev <run.amplicon.classifier> <reference.genome> <name.map>
 cpuType=any
@@ -9,7 +9,7 @@ description=Aggregates individual AmpliconSuite runs. Takes in zip files (or .ta
 documentationUrl=https\://github.com/genepattern/AmpliconSuiteAggregator/blob/develop/docs/v1/index.md
 fileFormat=
 job.cpuCount=1
-job.docker.image=genepattern/amplicon-suite-aggregator\:v2.5
+job.docker.image=genepattern/amplicon-suite-aggregator\:v2.6
 job.memory=4GB
 job.walltime=01\:00\:00
 language=any
@@ -107,10 +107,10 @@ p7_prefix_when_specified=--name_map
 p7_type=java.io.File
 p7_value=
 privacy=public
-publicationDate=07/12/2022 13\:27 
+publicationDate=10/12/2023 13\:06 
 quality=production
 src.repo=https\://github.com/genepattern/AmpliconSuiteAggregator
 taskDoc=
 taskType=
 userid=edwin5588
-version=New post method for Aggregator and API. 
+version=New post method for Aggregator and API.

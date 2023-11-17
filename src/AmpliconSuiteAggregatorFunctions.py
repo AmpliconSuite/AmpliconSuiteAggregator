@@ -53,7 +53,9 @@ def read_name_remap(name_remap_file):
                 fields = l.rstrip().rsplit()
                 name_remap[fields[0]] = fields[1]
 
-    print("Name remap has " + str(len(name_remap)) + " keys")
+        print("Name remap has " + str(len(name_remap)) + " keys")
+
+    print("No name remap file provided. Sample names will detected from filenames.")
     return name_remap
 
 
@@ -419,7 +421,9 @@ class Aggregator:
                         feat_file = feat_file.replace('./results/', "")
                         sample_dct['Feature BED file'] = feat_file
                     else:
-                        print(f'Feature: "Feature BED file" {feat_file} doesnt exist for sample {sample_dct["Sample name"]}')
+                        if not feat_file.endswith("/NA"):
+                            print(f'Feature: "Feature BED file" {feat_file} doesnt exist for sample {sample_dct["Sample name"]}')
+
                         sample_dct['Feature BED file'] = "Not Provided"
 
                 else:

@@ -55,7 +55,9 @@ def read_name_remap(name_remap_file):
 
         print("Name remap has " + str(len(name_remap)) + " keys")
 
-    print("No name remap file provided. Sample names will detected from filenames.")
+    else:
+        print("No name remap file provided. Sample names will detected from filenames.")
+        
     return name_remap
 
 

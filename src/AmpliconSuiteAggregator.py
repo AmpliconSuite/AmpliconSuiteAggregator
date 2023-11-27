@@ -6,7 +6,7 @@ import socket
 from AmpliconSuiteAggregatorFunctions import *
 from ASA_POST import * 
 
-__version__ = "4.0"
+__version__ = "4.1"
 
 
 def get_zip_paths(filelist_fp):
@@ -33,11 +33,11 @@ if __name__ == "__main__":
     group.add_argument("--files", nargs='+', type=str, help="List of files or directories to use")
     parser.add_argument("-o", "--output_name", type=str, help="Output Prefix and/or project name for site upload", default="output")
     parser.add_argument("-u", "--username", type=str, help = "Email address for Amplicon Repository. Setting this will "
-                        "trigger an attempt to upload the aggregated file to AmpliconRepository.org", required=False)
+                        "trigger an attempt to upload the aggregated file to AmpliconRepository.org", required=False, default="")
     # parser.add_argument('-t', '--testing', action = 'store_true', required = False)  # JL: This seems to be unused
     parser.add_argument("--upload_only", type=str, help="If 'Yes', then skip aggregation and classification and upload "
                         "the file as is. Note: the file must already be aggregated to successfully upload.",
-                        choices=['Yes', 'No'])
+                        choices=['Yes', 'No'], default="No")
     parser.add_argument("--name_map", type=str, help="A two column file providing the current identifier for each sample (col 1)"
                         " and a replacement name (col 2). Enables batch renaming of samples.")
     parser.add_argument("-c", "--run_classifier",type=str, help="If 'Yes', then run Amplicon Classifier on AA results. \

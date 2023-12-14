@@ -3,7 +3,7 @@
 JVMLevel=
 LSID=urn\:lsid\:genepattern.org\:module.analysis\:00429\:5
 author=Edwin Huang;Mesirov Lab
-commandLine=python3 /opt/genepatt/AmpliconSuiteAggregator.py -s dev --filelist <Amplicon.Architect.Results> --output_name <project_name> <Amplicon.Repository.Email> --upload_only <upload.only> --server dev <run.amplicon.classifier> <reference.genome> <name.map>
+commandLine=python3 /opt/genepatt/AmpliconSuiteAggregator.py -s prod --filelist <Amplicon.Architect.Results> --output_name <project_name> <Amplicon.Repository.Email> --upload_only <upload.only> --server dev <run.amplicon.classifier> <reference.genome> <name.map>
 cpuType=any
 description=Aggregates individual AmpliconSuite runs. Takes in zip files (or .tar.gz) and aggregates the results. Results can directly be used to load onto AmpliconRepository. 
 documentationUrl=https\://github.com/genepattern/AmpliconSuiteAggregator/blob/develop/docs/v1/index.md

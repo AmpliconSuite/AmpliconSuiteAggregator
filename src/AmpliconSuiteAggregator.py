@@ -51,6 +51,7 @@ if __name__ == "__main__":
     parser.add_argument("--python3_path", type=str, help="Specify a custom path to a python3 executable, assumes system path by default",
                         default='python3')
     parser.add_argument("-v", "--version", action='version', version=__version__)
+    parser.add_argument("--accept_license", choices = ['Yes', 'No'], default = "No", help = "Whether to accept or decline our Creative Commons V4 license: https://raw.githubusercontent.com/AmpliconSuite/AmpliconRepository/main/licenses/CCv4-BY.txt")
     args = parser.parse_args()
 
     if args.run_classifier == "Yes" and not args.ref:
@@ -124,8 +125,10 @@ if __name__ == "__main__":
                     'description': desc,
                     'private': True,
                     'project_members': [args.username],}
-
-            print(f'Creating project for user: {user}')
-            post_package(output_fp, data, args.server)
-
-        print("Upload completed. Site will upack and register files.")
+            if args.accept_license == "No":
+                print("You need to accept the Creative Commons v4 License. Please re-run the job with the `--accept_license Yes` option to upload to AmpliconRepository.org.")
+            else:
+                print('posting now')
+                print(f'Creating project for user: {user}')
+                post_package(output_fp, data, args.server)
+                print("Upload completed. Site will upack and register files.")

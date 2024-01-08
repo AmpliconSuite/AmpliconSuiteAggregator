@@ -6,7 +6,8 @@
         "parameters": [
             "Amplicon.Architect.Results",
             "project_name",
-            "Amplicon.Repository.Email"
+            "Amplicon.Repository.Email",
+            "accept.license"
         ]
     },
     {

@@ -4,7 +4,6 @@
 # AmpliconClassifier results and aggregates the results.
 ###
 import sys
-import tarfile
 import os
 import re
 import pandas as pd
@@ -394,7 +393,7 @@ class Aggregator:
                 sample_name = sample_dct["Sample name"]
                 ref_genomes.add(sample_dct["Reference version"])
                 if len(ref_genomes) > 1:
-                    sys.stderr.write(str(ref_genomes) + "\n")
+                    sys.stderr.write(sample_name + ": " + str(ref_genomes) + "\n")
                     sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
                                      "supports single-reference projects currently. Exiting.\n")
                     sys.exit(1)

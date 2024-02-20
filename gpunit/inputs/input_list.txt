@@ -1,4 +1,1 @@
-/files/gpunit/inputs/SRR8652055_outputs.tar.gz
-/files/gpunit/inputs/SRR8670701_outputs.tar.gz
-/files/gpunit/inputs/SRR8670737_outputs.tar.gz
-/files/gpunit/ff12_outputs.zip
+gpunit/inputs/64a72b934b8337c68e27fb12.tar.gz

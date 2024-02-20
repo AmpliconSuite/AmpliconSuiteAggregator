@@ -124,7 +124,8 @@ if __name__ == "__main__":
             data = {'project_name': os.path.basename(projname),
                     'description': desc,
                     'private': True,
-                    'project_members': [args.username],}
+                    'project_members': [args.username],
+                    'accept_license':True}
             if args.accept_license == "No":
                 print("You need to accept the Creative Commons v4 License. Please re-run the job with the `--accept_license Yes` option to upload to AmpliconRepository.org.")
             else:

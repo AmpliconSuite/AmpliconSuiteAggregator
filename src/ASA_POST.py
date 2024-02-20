@@ -14,7 +14,8 @@ def post_package(fp, data, server):
             {'project_name': string
             'description': string
             'private': boolean
-            'project_members': list}
+            'project_members': list,
+            'accept_license': boolean}
     '''
     if server == 'prod':
         homepage = 'https://ampliconrepository.org'

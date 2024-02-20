@@ -11,9 +11,10 @@ def post_package(fp, data, server):
 
     fp --> filepath to aggregated tar gz file
     data --> a dict containing additional information:
-            {'project_name': string
-            'description': string
-            'private': boolean
+            {'project_name': string,
+            'description': string,
+            'publication_link:string,
+            'private': boolean,
             'project_members': list,
             'accept_license': boolean}
     '''

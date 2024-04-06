@@ -303,11 +303,13 @@ class Aggregator:
         sample_num = 1
         # aggregate results
         print("Aggregating results into tables")
+        found_res_table = False
         for res_dir in [OUTPUT_PATH, OTHER_FILES]:
             for root, dirs, files in os.walk(res_dir, topdown = False):
                 for name in files:
                     if name.endswith("_result_table.tsv") and not name.startswith("._"):
                         result_table_fp = os.path.join(root, name)
+                        found_res_table = True
                         try:
                             df = pd.read_csv(result_table_fp, delimiter = '\t')
                             aggregate = pd.concat([aggregate, df], ignore_index = True)
@@ -323,6 +325,12 @@ class Aggregator:
                             runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient = 'records'))
                             sample_to_ac_dir[f'sample_{sample_num}'] = os.path.dirname(result_table_fp)
                             sample_num += 1
+
+        if not found_res_table:
+            print("Error: No results tables found! Aggregation will be empty or invalid. Please make sure to first run make_results_table.py from AmpliconClassifier.")
+            self.cleanup()
+            sys.exit(1)
+
 
         ## output the table
         with open('./results/run.json', 'w') as run_file:

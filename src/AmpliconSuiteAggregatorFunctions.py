@@ -257,12 +257,14 @@ class Aggregator:
             AC_SRC = os.environ['AC_SRC']
         except KeyError:
             sys.stderr.write("AC_SRC variable not found! AmpliconClassifier is not properly installed.\n")
+            self.cleanup()
             sys.exit(1)
 
         print(f"AC_SRC is set to {AC_SRC}")
         input_ec = os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}")
         if input_ec != 0:
             print("Failed to make input for AC!")
+            self.cleanup()
             sys.exit(1)
 
         ## if reference isn't downloaded already, then download appropriate reference genome
@@ -270,6 +272,7 @@ class Aggregator:
             local_data_repo = os.environ['AA_DATA_REPO']
         except KeyError:
             sys.stderr.write("AA_DATA_REPO variable not found! The AA data repo directory is not properly configured.\n")
+            self.cleanup()
             sys.exit(1)
 
         if not os.path.exists(os.path.join(local_data_repo, self.ref)):
@@ -410,6 +413,7 @@ class Aggregator:
                     sys.stderr.write(str(ref_genomes) + "\n")
                     sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
                                      "supports single-reference projects currently. Exiting.\n")
+                    self.cleanup()
                     sys.exit(1)
 
                 potential_str_lsts = [

@@ -80,6 +80,7 @@ def unzip_file(fp, dest_root):
 
     except Exception as e:
         print(e)
+        sys.exit(1)
 
 
 def clean_dirs(dlist):
@@ -259,7 +260,10 @@ class Aggregator:
             sys.exit(1)
 
         print(f"AC_SRC is set to {AC_SRC}")
-        os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}" )
+        input_ec = os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}")
+        if input_ec != 0:
+            print("Failed to make input for AC!")
+            sys.exit(1)
 
         ## if reference isn't downloaded already, then download appropriate reference genome
         try:

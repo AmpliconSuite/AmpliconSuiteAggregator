@@ -78,6 +78,16 @@ def unzip_file(fp, dest_root):
                 zip_ref.extractall(destination)
             zip_ref.close()
 
+        elif fp.endswith(".tar"):
+            zip_name = os.path.basename(fp).replace(".tar", "")
+            destination = f'{dest_root}/{zip_name}'
+            with tarfile.open(fp, 'r') as output_zip:
+                output_zip.extractall(destination)
+            output_zip.close()
+
+        else:
+            print("File " + fp + " is not a zip or tar file. It may be ignored!")
+
     except Exception as e:
         print(e)
         sys.exit(1)
@@ -112,6 +122,7 @@ class Aggregator:
             self.run_amp_classifier()
         self.samp_AA_dct, self.samp_ckit_dct = defaultdict(str), defaultdict(str)
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
+        self.samp_cnv_calls_dct = defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
         # print(self.samp_ckit_dct)
         # print(self.samp_AA_dct)
@@ -209,6 +220,10 @@ class Aggregator:
                     elif f.endswith("_sample_metadata.json"):
                         implied_sname = rchop(f, "_sample_metadata.json")
                         self.samp_mdata_dct[implied_sname] = fp + "/" + f
+
+                    elif f.endswith("_CNV_CALLS.bed"):
+                        implied_sname = rchop(f, "_CNV_CALLS.bed")
+                        self.samp_cnv_calls_dct[implied_sname] = fp + "/" + f
 
     def run_amp_classifier(self):
         """
@@ -462,6 +477,9 @@ class Aggregator:
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
                         if feature == "CNV BED file" and any([feat_file.endswith(x) for x in ["AA_CNV_SEEDS.bed", "CNV_CALLS_pre_filtered.bed", "Not provided", "Not Provided"]]):
+                            if self.samp_cnv_calls_dct[sample_name]:
+                                feat_file = self.samp_cnv_calls_dct[sample_name]
+
                             cnvkit_dir = self.samp_ckit_dct[sample_dct['Sample name']]
                             if cnvkit_dir:
                                 for f in os.listdir(cnvkit_dir):

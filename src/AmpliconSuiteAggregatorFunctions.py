@@ -6,7 +6,6 @@
 import sys
 import os
 import re
-import pandas as pd
 import tarfile
 import shutil
 import json
@@ -15,6 +14,10 @@ import ast
 import zipfile
 from collections import defaultdict
 import requests
+import glob
+
+import pandas as pd
+
 
 
 DEST_ROOT = os.path.join("./extracted_from_zips")
@@ -89,8 +92,10 @@ def unzip_file(fp, dest_root):
             print("File " + fp + " is not a zip or tar file. It may be ignored!")
 
     except Exception as e:
+        print("ERROR WHILE EXTRACTING FILES!")
         print(e)
-        sys.exit(1)
+        if ":" not in e:  # not due to legacy ':' in AA files
+            sys.exit(1)
 
 
 def clean_dirs(dlist):
@@ -207,6 +212,7 @@ class Aggregator:
                 elif fp.endswith("_cnvkit_output"):
                     implied_sname = rchop(fp,"_cnvkit_output").rsplit("/")[-1]
                     self.clean_by_suffix(".cnr.gz", fp)
+                    self.clean_by_suffix(".cnr", fp)
                     cmd = f'gzip -fq {fp}/*.cns 2> /dev/null'
                     subprocess.call(cmd, shell=True)
                     # print(fp.rstrip("_cnvkit_output"), implied_sname)
@@ -517,6 +523,7 @@ class Aggregator:
                         # clean .out and .cnr.gz files
                         self.clean_by_suffix("*.out", orig_dir)
                         self.clean_by_suffix("*.cnr.gz", orig_dir)
+                        self.clean_by_suffix("*.cnr", orig_dir)
 
                         tarf = orig_dir + ".tar.gz"
                         self.tardir(orig_dir, tarf, keep_root=False)
@@ -548,21 +555,25 @@ class Aggregator:
         aggregate.to_html('./results/aggregated_results.html')
 
     def clean_by_suffix(self, suffix, dir):
-        if suffix and dir and not dir == "/" and not suffix == "*":
+        # Validate inputs
+        if suffix and dir and dir != "/" and suffix != "*":
             if not suffix.startswith("*"):
                 suffix = "*" + suffix
 
-            cmd = f'rm -f {dir}/{suffix}'
-            # try:
-            subprocess.call(cmd, shell=True)
-            # except FileNotFoundError:
-            #     pass
+            # Use glob to safely handle file listing
+            file_pattern = os.path.join(dir, suffix)
+            files_to_remove = glob.glob(file_pattern)
+            for file_path in files_to_remove:
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    print(f"Error removing {file_path}: {e}")
 
 
 # TODO: VALIDATE IS NEVER USED!
 def validate():
     """
-    Validates that all of the file locations exist.
+    Validates that all the file locations exist.
     """
     ## check that everything is in the right place
     if os.path.exists('./output'):

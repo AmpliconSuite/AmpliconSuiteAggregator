@@ -94,7 +94,7 @@ def unzip_file(fp, dest_root):
     except Exception as e:
         print("ERROR WHILE EXTRACTING FILES!")
         print(e)
-        if ":" not in e:  # not due to legacy ':' in AA files
+        if ":" not in str(e):  # not due to legacy ':' in AA files
             sys.exit(1)
 
 
@@ -143,6 +143,13 @@ class Aggregator:
         Unzips the zip files, and get directories for files within
 
         """
+
+        # check if either of these directories exists, and if it does, run the command below:
+        for temp_output_dir in ['./results', DEST_ROOT]:
+            if os.path.exists(temp_output_dir):
+                print("Warning: Directory " + temp_output_dir + " already exists! Cleaning now.")
+                clean_dirs([temp_output_dir,])
+
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
@@ -278,14 +285,14 @@ class Aggregator:
             AC_SRC = os.environ['AC_SRC']
         except KeyError:
             sys.stderr.write("AC_SRC variable not found! AmpliconClassifier is not properly installed.\n")
-            self.cleanup()
+            self.cleanup(failure=True)
             sys.exit(1)
 
         print(f"AC_SRC is set to {AC_SRC}")
         input_ec = os.system(f"{AC_SRC}/make_input.sh {OUTPUT_PATH} {OUTPUT_PATH}/{self.output_name}")
         if input_ec != 0:
             print("Failed to make input for AC!")
-            self.cleanup()
+            self.cleanup(failure=True)
             sys.exit(1)
 
         ## if reference isn't downloaded already, then download appropriate reference genome
@@ -293,7 +300,7 @@ class Aggregator:
             local_data_repo = os.environ['AA_DATA_REPO']
         except KeyError:
             sys.stderr.write("AA_DATA_REPO variable not found! The AA data repo directory is not properly configured.\n")
-            self.cleanup()
+            self.cleanup(failure=True)
             sys.exit(1)
 
         if not os.path.exists(os.path.join(local_data_repo, self.ref)):
@@ -356,7 +363,7 @@ class Aggregator:
 
         if not found_res_table:
             print("Error: No results tables found! Aggregation will be empty or invalid. Please make sure to first run make_results_table.py from AmpliconClassifier.")
-            self.cleanup()
+            self.cleanup(failure=True)
             sys.exit(1)
 
 
@@ -385,14 +392,16 @@ class Aggregator:
 
         tar_handle.close()
 
-    def cleanup(self):
+    def cleanup(self, failure=False):
         """
         Zips the aggregate results, and deletes files for cleanup
         """
         clean_dirs(self.samp_AA_dct.values())
         # self.clean_files(self.samp_ckit_dct.values())
-        print("Creating tar.gz...")
-        self.tardir('./results', f'{self.output_name}.tar.gz')
+        if not failure:
+            print("Creating tar.gz...")
+            self.tardir('./results', f'{self.output_name}.tar.gz')
+
         clean_dirs(['./results', DEST_ROOT]) # ./extracted_from_zips
 
     # def find_file(self, basename):
@@ -434,7 +443,7 @@ class Aggregator:
                     sys.stderr.write(str(ref_genomes) + "\n")
                     sys.stderr.write("ERROR! Multiple reference genomes detected in project.\n AmpliconRepository only "
                                      "supports single-reference projects currently. Exiting.\n")
-                    self.cleanup()
+                    self.cleanup(failure=True)
                     sys.exit(1)
 
                 potential_str_lsts = [

@@ -1,0 +1,20 @@
+[project]
+name = "AmpliconSuiteAggregator"
+version = "2.1"
+authors = [
+  { name="Edwin Huang", email="edwin5588@gmail.com" },
+  { name="Thorin Tabor", email="tmtabor@cloud.ucsd.edu" },
+]
+description = "Aggregator tool for multiple Amplicon Architect outputs"
+readme = "README.md"
+requires-python = ">=3.8,<=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+license = {file = "LICENSE"}
+
+[project.urls]
+Homepage = "https://github.com/AmpliconSuite/AmpliconSuiteAggregator"
+Issues = "https://github.com/AmpliconSuite/AmpliconSuiteAggregator/issues"

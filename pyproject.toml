@@ -1,13 +1,13 @@
 [project]
 name = "AmpliconSuiteAggregator"
-version = "2.1"
+version = "2.1.1"
 authors = [
   { name="Edwin Huang", email="edwin5588@gmail.com" },
   { name="Thorin Tabor", email="tmtabor@cloud.ucsd.edu" },
 ]
 description = "Aggregator tool for multiple Amplicon Architect outputs"
 readme = "README.md"
-requires-python = ">=3.8,<=3.10"
+requires-python = ">3.7,<3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

@@ -78,6 +78,10 @@ if __name__ == "__main__":
         # Do the aggregation
         aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path,
                                args.name_map)
+        if not aggregate.completed:
+            sys.stderr.write("Failure to aggregate. Likely a problem with input files!\n")
+            sys.exit(1)
+
         output_fp = args.output_name + ".tar.gz"
         output_list = [output_fp, ]
     else:

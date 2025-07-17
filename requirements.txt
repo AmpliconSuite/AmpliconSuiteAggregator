@@ -1,13 +1,4 @@
-certifi==2025.6.15
-charset-normalizer==3.4.2
-idna==3.10
-intervaltree==3.1.0
-numpy==1.22.2
-pandas==1.5.3
-python-dateutil==2.9.0.post0
-pytz==2025.2
-requests==2.31.0
-scipy==1.9.3
-six==1.17.0
-sortedcontainers==2.4.0
-urllib3==2.5.0
+intervaltree>=3.1.0
+pandas>=1.5.3
+requests>=2.31.0
+scipy>=1.9.3

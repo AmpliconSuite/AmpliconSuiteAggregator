@@ -199,7 +199,7 @@ class Aggregator:
                         if aa_samples_found % 100 == 0:
                             print("Crawled through " + str(aa_samples_found) + " AA results...")
 
-                if fp.endswith("_cnvkit_output"):
+                if fp.endswith("cnvkit_output"):
                     print(f'Moving cnvkit_outputs to {self.OUTPUT_PATH}')
                     os.system(f'mv -vf {os.path.dirname(fp)} {self.OUTPUT_PATH}')
 

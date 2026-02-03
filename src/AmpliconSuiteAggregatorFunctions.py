@@ -238,7 +238,7 @@ class Aggregator:
                     implied_sname = rchop(fp, "_AA_results").rsplit("/")[-1]
                     self.samp_AA_dct[implied_sname] = fp
 
-                elif fp.endswith("_cnvkit_output"):
+                elif fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
                     implied_sname = rchop(fp, "_cnvkit_output").rsplit("/")[-1]
                     self.clean_by_suffix(".cnr.gz", fp)
                     self.clean_by_suffix(".cnr", fp)

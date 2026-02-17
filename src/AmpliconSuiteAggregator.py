@@ -6,8 +6,6 @@ import socket
 from AmpliconSuiteAggregatorFunctions import *
 from ASA_POST import * 
 
-__version__ = "5.1"
-
 
 def get_zip_paths(filelist_fp):
     """

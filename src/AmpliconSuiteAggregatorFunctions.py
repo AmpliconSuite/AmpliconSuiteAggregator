@@ -15,10 +15,12 @@ import glob
 
 import pandas as pd
 
+__version__ = "5.2"
+
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz', 'aln_stage.stderr', '.fai']
 # STRING BELOW CANNOT HAVE ANY SPACES IN IT
 CLASSIFIER_FILES = "_classification,_amplicon_classification_profiles.tsv,_annotated_cycles_files,_classification_bed_files," \
-                   "_ecDNA_counts.tsv,_edge_classification_profiles.tsv,_feature_basic_properties.tsv,_feature_entropy.tsv," \
+                   "_ecDNA_counts.tsv,ecDNA_context_calls.tsv,_edge_classification_profiles.tsv,_feature_basic_properties.tsv,_feature_entropy.tsv," \
                    "_feature_similarity_scores.tsv,_features_to_graph.txt,_gene_list.tsv,.input,_SV_summaries,_result_data.json," \
                    "_result_table.tsv,files,index.html".split(',')
 
@@ -114,6 +116,7 @@ class Aggregator:
         self.DEST_ROOT = os.path.join(f"{self.root}/extracted_from_zips")
         self.OUTPUT_PATH = os.path.join(f"{self.root}/results/AA_outputs")
         self.OTHER_FILES = os.path.join(f"{self.root}/results/other_files")
+        print(f"AmpliconSuiteAggregator {__version__}")
         print("DEST_ROOT: " + self.DEST_ROOT)
 
         self.zip_paths = filelist
@@ -146,119 +149,143 @@ class Aggregator:
         self.cleanup()
 
     def unzip(self):
-        """
-        Unzips the zip files, and get directories for files within
-
-        """
-
-        # check if either of these directories exists, and if it does, run the command below:
         for temp_output_dir in [f'{self.root}/results', self.DEST_ROOT]:
             if os.path.exists(temp_output_dir):
                 print("Warning: Directory " + temp_output_dir + " already exists! Cleaning now.")
-                clean_dirs([temp_output_dir, ])
+                clean_dirs([temp_output_dir])
 
         for zip_fp in self.zip_paths:
             fp = os.path.join(self.root, zip_fp)
             try:
                 unzip_file(fp, self.DEST_ROOT)
-
             except Exception as e:
                 print("The zip: " + fp + " ran into an error when unzipping.")
                 print(e)
 
-        ## find all nested zips and extract them.
+        # Extract any nested zips
         print("Finding compressed files...")
+        nested_zips = []
         for root, dirs, files in os.walk(self.DEST_ROOT):
             for file in files:
-                if file.endswith(".tar.gz") or file.endswith(".zip"):
-                    fp = os.path.join(root, file)
-                    unzip_file(fp, self.DEST_ROOT)
+                if file.endswith(".tar.gz") or file.endswith(".zip") or file.endswith(".tar"):
+                    nested_zips.append(os.path.join(root, file))
+        for fp in nested_zips:
+            unzip_file(fp, self.DEST_ROOT)
 
-        ## moving required AA files to correct destination
         if not os.path.exists(self.OUTPUT_PATH):
             os.makedirs(self.OUTPUT_PATH)
-
         if not os.path.exists(self.OTHER_FILES):
             os.makedirs(self.OTHER_FILES)
 
-        ## find samples and move files
-        # samples = []
-        aa_samples_found = 0
+        # Pass 1: collect all _AA_results dirs and their parents
         print("Crawling files for AA, classification, and CN data...")
+        aa_parents = {}  # parent_path -> set of child dir names found under it
+        aa_results_paths = set()
         for root, dirs, files in os.walk(self.DEST_ROOT, topdown=True):
-            for dir in dirs:
-                fp = os.path.join(root, dir)
-                if "__MACOSX" in fp or "DS_Store" in fp or not os.path.exists(fp):
+            # prune macOS metadata dirs from walk entirely
+            dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
+            for d in dirs:
+                fp = os.path.join(root, d)
+                if d.endswith("_AA_results"):
+                    if any(x.endswith("_summary.txt") for x in os.listdir(fp)):
+                        parent = os.path.dirname(fp)
+                        aa_parents[parent] = aa_parents.get(parent, set())
+                        aa_parents[parent].add(d)
+                        aa_results_paths.add(fp)
+                    else:
+                        print(f"Warning: {fp} looks like _AA_results but has no summary.txt, skipping.")
+
+        # Pass 2: copy each AA parent dir into OUTPUT_PATH
+        copied_parents = set()
+        for parent, children in aa_parents.items():
+            dest = os.path.join(self.OUTPUT_PATH, os.path.basename(parent))
+            try:
+                shutil.copytree(parent, dest, dirs_exist_ok=True)
+                copied_parents.add(parent)
+                print(f"Copied AA parent {parent} -> {dest}")
+            except Exception as e:
+                print(f"Error copying {parent} to {dest}: {e}")
+
+        # Pass 3: find _classification and _cnvkit_output dirs not inside a copied parent
+        # These are per-collection classification dirs -> go to OTHER_FILES
+        for root, dirs, files in os.walk(self.DEST_ROOT, topdown=True):
+            dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
+            for d in dirs:
+                fp = os.path.join(root, d)
+                parent = os.path.dirname(fp)
+                is_under_copied_parent = any(fp.startswith(p) for p in copied_parents)
+                if is_under_copied_parent:
                     continue
 
-                if fp.endswith("_AA_results"):
-                    if any([x.endswith("_summary.txt") for x in os.listdir(fp)]):
-                        print(f'Moving AA results to {self.OUTPUT_PATH}')
-                        os.system(f'mv -vf {os.path.dirname(fp)} {self.OUTPUT_PATH}')
-                        aa_samples_found += 1
-                        if aa_samples_found % 100 == 0:
-                            print("Crawled through " + str(aa_samples_found) + " AA results...")
+                if d.endswith("_classification"):
+                    # Check recursively for AUX_DIR or result_table anywhere in the tree
+                    has_aux = any(
+                        "AUX_DIR" in dirs or any(f.endswith("_result_table.tsv") for f in files)
+                        for _, dirs, files in os.walk(fp)
+                    )
+                    if has_aux:
+                        dest = os.path.join(self.OTHER_FILES, d)
+                        try:
+                            shutil.copytree(fp, dest, dirs_exist_ok=True)
+                            print(f"Copied per-collection classification dir {fp} -> {dest}")
+                        except Exception as e:
+                            print(f"Error copying {fp} to {dest}: {e}")
+                    else:
+                        print(
+                            f"Warning: {fp} looks like a classification dir but has no result_table.tsv or AUX_DIR, skipping.")
 
-                if fp.endswith("cnvkit_output"):
-                    print(f'Moving cnvkit_outputs to {self.OUTPUT_PATH}')
-                    os.system(f'mv -vf {os.path.dirname(fp)} {self.OUTPUT_PATH}')
-
-                if os.path.exists(fp) and any(
-                        [x.endswith("_result_table.tsv") or x == "AUX_DIR" for x in os.listdir(fp)]):
-                    pre = fp.rstrip("_classification")
-                    # don't need to move things that will get brought already into AA_outputs
-                    if not fp.endswith("_classification") and not os.path.exists(pre + "_AA_results"):
-                        print(f'Moving file {fp} to {self.OTHER_FILES}')
-                        os.system(f'mv -vf {fp} {self.OTHER_FILES}')
-                    elif fp.endswith("_classification"):
-                        # Check if this classification dir is NOT a subdirectory of an AA_results dir
-                        aa_results_parent = None
-                        current_path = fp
-                        while current_path != self.DEST_ROOT:
-                            current_path = os.path.dirname(current_path)
-                            if current_path.endswith("_AA_results"):
-                                aa_results_parent = current_path
-                                break
-
-                        if aa_results_parent is None:  # Not inside an AA_results directory
-                            print(f'Moving classification file {fp} to {self.OTHER_FILES}')
-                            os.system(f'mv -vf {fp} {self.OTHER_FILES}')
-
+                elif d.endswith("_cnvkit_output") or d.endswith("_cnvkit_outputs"):
+                    dest = os.path.join(self.OTHER_FILES, d)
+                    try:
+                        shutil.copytree(fp, dest, dirs_exist_ok=True)
+                        print(f"Copied per-collection cnvkit dir {fp} -> {dest}")
+                    except Exception as e:
+                        print(f"Error copying {fp} to {dest}: {e}")
 
     def locate_dirs_and_metadata_jsons(self):
-        # post-move identification of AA and CNVKit files:
-        print("Locating metadata...")
-        for root, dirs, files in os.walk(self.OUTPUT_PATH, topdown=True):
-            for dir in dirs:
-                fp = os.path.join(root, dir)
-                if not os.path.exists(fp):
-                    continue
+        print("Locating metadata and unlinked files...")
+        for search_path in [self.OUTPUT_PATH, self.OTHER_FILES]:
+            for root, dirs, files in os.walk(search_path, topdown=True):
+                for dir in dirs:
+                    fp = os.path.join(root, dir)
+                    if not os.path.exists(fp):
+                        continue
 
-                if fp.endswith("_AA_results"):
-                    implied_sname = rchop(fp, "_AA_results").rsplit("/")[-1]
-                    self.samp_AA_dct[implied_sname] = fp
+                    try:
+                        dir_contents = os.listdir(fp)
+                    except OSError as e:
+                        print(f"Warning: could not list {fp}: {e}")
+                        continue
 
-                elif fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
-                    implied_sname = rchop(fp, "_cnvkit_output").rsplit("/")[-1]
-                    self.clean_by_suffix(".cnr.gz", fp)
-                    self.clean_by_suffix(".cnr", fp)
-                    cmd = f'gzip -fq {fp}/*.cns 2> /dev/null'
-                    subprocess.call(cmd, shell=True)
-                    # print(fp.rstrip("_cnvkit_output"), implied_sname)
-                    self.samp_ckit_dct[implied_sname] = fp
+                    if fp.endswith("_AA_results"):
+                        implied_sname = rchop(fp, "_AA_results").rsplit("/")[-1]
+                        self.samp_AA_dct[implied_sname] = fp
 
-                for f in os.listdir(fp):
-                    if f.endswith("_run_metadata.json"):
-                        implied_sname = rchop(f, "_run_metadata.json")
-                        self.run_mdata_dct[implied_sname] = fp + "/" + f
+                    elif fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
+                        suffix = "_cnvkit_outputs" if fp.endswith("_cnvkit_outputs") else "_cnvkit_output"
+                        implied_sname = rchop(os.path.basename(fp), suffix)
+                        self.clean_by_suffix(".cnr.gz", fp)
+                        self.clean_by_suffix(".cnr", fp)
+                        self.clean_by_suffix("call.cns.gz", fp)
+                        self.clean_by_suffix("call.cns", fp)
+                        cmd = f'gzip -fq {fp}/*.cns 2> /dev/null'
+                        subprocess.call(cmd, shell=True)
+                        self.samp_ckit_dct[implied_sname] = fp
 
-                    elif f.endswith("_sample_metadata.json"):
-                        implied_sname = rchop(f, "_sample_metadata.json")
-                        self.samp_mdata_dct[implied_sname] = fp + "/" + f
-
-                    elif f.endswith("_CNV_CALLS.bed"):
-                        implied_sname = rchop(f, "_CNV_CALLS.bed")
-                        self.samp_cnv_calls_dct[implied_sname] = fp + "/" + f
+                    for f in dir_contents:
+                        if f.endswith("_run_metadata.json"):
+                            implied_sname = rchop(f, "_run_metadata.json")
+                            self.run_mdata_dct[implied_sname] = fp + "/" + f
+                        elif f.endswith("_sample_metadata.json"):
+                            implied_sname = rchop(f, "_sample_metadata.json")
+                            self.samp_mdata_dct[implied_sname] = fp + "/" + f
+                        elif f.endswith("_CNV_CALLS.bed"):
+                            if fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
+                                suffix = "_cnvkit_outputs" if fp.endswith("_cnvkit_outputs") else "_cnvkit_output"
+                                cnv_sname = rchop(os.path.basename(fp), suffix)
+                            else:
+                                cnv_sname = rchop(f, "_CNV_CALLS.bed")
+                            self.samp_cnv_calls_dct[cnv_sname] = fp + "/" + f
 
     def run_amp_classifier(self):
         """
@@ -373,18 +400,18 @@ class Aggregator:
                         try:
                             df = pd.read_csv(result_table_fp, delimiter='\t')
                             aggregate = pd.concat([aggregate, df], ignore_index=True)
-
                         except Exception as e:
                             print(e)
                             continue
 
-                        # print(df)
                         gdf = df.groupby('Sample name')
                         for sname, group in gdf:
                             print(f'{sname} has {str(len(group))} rows')
-                            runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient='records'))
-                            sample_to_ac_dir[f'sample_{sample_num}'] = os.path.dirname(result_table_fp)
-                            sample_num += 1
+                            # KEY CHANGE: use sname instead of sample_N integer key
+                            runs[sname] = json.loads(group.to_json(orient='records'))
+                            if sname in sample_to_ac_dir:
+                                print(f"Warning: duplicate sample name {sname} found in multiple result tables.")
+                            sample_to_ac_dir[sname] = os.path.dirname(result_table_fp)
 
         if not found_res_table:
             print(

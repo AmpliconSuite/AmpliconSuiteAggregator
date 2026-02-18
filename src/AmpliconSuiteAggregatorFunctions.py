@@ -106,8 +106,34 @@ def check_run_json(dest_root, bname):
     return os.path.exists(runj_path)
 
 
+def is_valid_aa_dir(fp):
+    """
+    Checks if a directory is a valid AA results directory by verifying
+    that a _summary.txt file exists and its first line begins with '#Amplicons'.
+    """
+    try:
+        summary_files = [x for x in os.listdir(fp) if x.endswith("_summary.txt")]
+        if not summary_files:
+            return False
+        if len(summary_files) > 1:
+            print(f"Multiple summaries in {fp}, suggests mixed AA results")
+            return False
+        if fp.endswith("/files"):  # this is a classification localization directory
+            return False
+        if fp.endswith("_AA_results"):
+            return True
+
+        summary_path = os.path.join(fp, summary_files[0])
+        with open(summary_path, 'r') as sf:
+            first_line = sf.readline()
+        return first_line.startswith("#Amplicons")
+    except OSError as e:
+        print(f"Warning: could not read summary in {fp}: {e}")
+        return False
+
+
 class Aggregator:
-    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path, name_remap_file=None, uuid=""):
+    def __init__(self, filelist, root, output_name, run_classifier, ref, py3_path, no_clean=False, name_remap_file=None, uuid=""):
         self.root = root
         if not os.path.exists(self.root):
             os.makedirs(self.root)
@@ -129,6 +155,8 @@ class Aggregator:
         self.run_classifier = run_classifier
         self.ref = ref
         self.py3_path = py3_path
+        self.NO_CLEAN = no_clean
+        print(f"No clean mode: {no_clean}")
         self.name_remap = read_name_remap(name_remap_file)
 
         self.unzip()
@@ -138,10 +166,6 @@ class Aggregator:
         self.samp_mdata_dct, self.run_mdata_dct = defaultdict(str), defaultdict(str)
         self.samp_cnv_calls_dct = defaultdict(str)
         self.locate_dirs_and_metadata_jsons()
-        # print(self.samp_ckit_dct)
-        # print(self.samp_AA_dct)
-        # print(self.samp_mdata_dct)
-        # print(self.run_mdata_dct)
         self.sample_to_ac_location_dct = self.aggregate_tables()
         self.json_modifications()
 
@@ -162,10 +186,11 @@ class Aggregator:
                 print("The zip: " + fp + " ran into an error when unzipping.")
                 print(e)
 
-        # Extract any nested zips
+        # Extract any nested zips — collect first, then extract (avoid walk/modify race)
         print("Finding compressed files...")
         nested_zips = []
         for root, dirs, files in os.walk(self.DEST_ROOT):
+            dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
             for file in files:
                 if file.endswith(".tar.gz") or file.endswith(".zip") or file.endswith(".tar"):
                     nested_zips.append(os.path.join(root, file))
@@ -177,25 +202,27 @@ class Aggregator:
         if not os.path.exists(self.OTHER_FILES):
             os.makedirs(self.OTHER_FILES)
 
-        # Pass 1: collect all _AA_results dirs and their parents
+        # Pass 1: collect all valid AA results dirs and their parents.
+        # Validity is determined by reading the first line of the _summary.txt file.
+        # Ending in _AA_results strengthens confidence but is not required.
         print("Crawling files for AA, classification, and CN data...")
-        aa_parents = {}  # parent_path -> set of child dir names found under it
+        aa_parents = {}      # parent_path -> set of child dir names found under it
         aa_results_paths = set()
         for root, dirs, files in os.walk(self.DEST_ROOT, topdown=True):
-            # prune macOS metadata dirs from walk entirely
             dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
             for d in dirs:
                 fp = os.path.join(root, d)
-                if d.endswith("_AA_results"):
-                    if any(x.endswith("_summary.txt") for x in os.listdir(fp)):
-                        parent = os.path.dirname(fp)
-                        aa_parents[parent] = aa_parents.get(parent, set())
-                        aa_parents[parent].add(d)
-                        aa_results_paths.add(fp)
-                    else:
-                        print(f"Warning: {fp} looks like _AA_results but has no summary.txt, skipping.")
+                if is_valid_aa_dir(fp):
+                    if not d.endswith("_AA_results"):
+                        print(f"Warning: found valid AA results dir with unexpected name: {fp}")
+                    parent = os.path.dirname(fp)
+                    aa_parents.setdefault(parent, set()).add(d)
+                    aa_results_paths.add(fp)
+                elif d.endswith("_AA_results"):
+                    print(f"Warning: {fp} looks like _AA_results but failed validation, skipping.")
 
-        # Pass 2: copy each AA parent dir into OUTPUT_PATH
+        # Pass 2: copy each AA parent dir into OUTPUT_PATH.
+        # Copying (not moving) keeps the source tree intact for Pass 3.
         copied_parents = set()
         for parent, children in aa_parents.items():
             dest = os.path.join(self.OUTPUT_PATH, os.path.basename(parent))
@@ -206,43 +233,53 @@ class Aggregator:
             except Exception as e:
                 print(f"Error copying {parent} to {dest}: {e}")
 
-        # Pass 3: find _classification and _cnvkit_output dirs not inside a copied parent
-        # These are per-collection classification dirs -> go to OTHER_FILES
+        # Pass 3: find dirs not under a copied AA parent that belong in OTHER_FILES.
+        # Detection rules (direct children only, not recursive):
+        #   Classification dirs: ends with _classification, OR directly contains
+        #                        a _result_table.tsv, OR directly contains AUX_DIR
+        #   CNV dirs: directly contains a _CNV_CALLS.bed file
+        #             (ending in _cnvkit_output(s) strengthens confidence but is not required)
         for root, dirs, files in os.walk(self.DEST_ROOT, topdown=True):
             dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
             for d in dirs:
                 fp = os.path.join(root, d)
-                parent = os.path.dirname(fp)
-                is_under_copied_parent = any(fp.startswith(p) for p in copied_parents)
-                if is_under_copied_parent:
+                if any(fp.startswith(p) for p in copied_parents):
                     continue
 
-                if d.endswith("_classification"):
-                    # Check recursively for AUX_DIR or result_table anywhere in the tree
-                    has_aux = any(
-                        "AUX_DIR" in dirs or any(f.endswith("_result_table.tsv") for f in files)
-                        for _, dirs, files in os.walk(fp)
-                    )
-                    if has_aux:
-                        dest = os.path.join(self.OTHER_FILES, d)
-                        try:
-                            shutil.copytree(fp, dest, dirs_exist_ok=True)
-                            print(f"Copied per-collection classification dir {fp} -> {dest}")
-                        except Exception as e:
-                            print(f"Error copying {fp} to {dest}: {e}")
-                    else:
-                        print(
-                            f"Warning: {fp} looks like a classification dir but has no result_table.tsv or AUX_DIR, skipping.")
+                try:
+                    dir_contents = set(os.listdir(fp))
+                except OSError as e:
+                    print(f"Warning: could not list {fp}: {e}")
+                    continue
 
-                elif d.endswith("_cnvkit_output") or d.endswith("_cnvkit_outputs"):
+                is_classification_dir = (
+                    d.endswith("_classification") or
+                    any(f.endswith("_result_table.tsv") for f in dir_contents) or
+                    "AUX_DIR" in dir_contents
+                )
+                is_cnv_dir = any(f.endswith("_CNV_CALLS.bed") for f in dir_contents)
+
+                if is_classification_dir:
                     dest = os.path.join(self.OTHER_FILES, d)
                     try:
                         shutil.copytree(fp, dest, dirs_exist_ok=True)
-                        print(f"Copied per-collection cnvkit dir {fp} -> {dest}")
+                        print(f"Copied classification dir {fp} -> {dest}")
+                    except Exception as e:
+                        print(f"Error copying {fp} to {dest}: {e}")
+
+                elif is_cnv_dir:
+                    dest = os.path.join(self.OTHER_FILES, d)
+                    try:
+                        shutil.copytree(fp, dest, dirs_exist_ok=True)
+                        print(f"Copied CNV dir {fp} -> {dest}")
                     except Exception as e:
                         print(f"Error copying {fp} to {dest}: {e}")
 
     def locate_dirs_and_metadata_jsons(self):
+        # Walk both OUTPUT_PATH and OTHER_FILES so that cnvkit dirs that landed
+        # in other_files (e.g. per-collection runs) are still discovered and
+        # registered in samp_ckit_dct / samp_cnv_calls_dct for the rescue logic
+        # in json_modifications().
         print("Locating metadata and unlinked files...")
         for search_path in [self.OUTPUT_PATH, self.OTHER_FILES]:
             for root, dirs, files in os.walk(search_path, topdown=True):
@@ -262,6 +299,8 @@ class Aggregator:
                         self.samp_AA_dct[implied_sname] = fp
 
                     elif fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
+                        # Use rchop with the longer suffix first so that the trailing
+                        # 's' variant is handled correctly with a single call.
                         suffix = "_cnvkit_outputs" if fp.endswith("_cnvkit_outputs") else "_cnvkit_output"
                         implied_sname = rchop(os.path.basename(fp), suffix)
                         self.clean_by_suffix(".cnr.gz", fp)
@@ -272,6 +311,14 @@ class Aggregator:
                         subprocess.call(cmd, shell=True)
                         self.samp_ckit_dct[implied_sname] = fp
 
+                        # Register CNV_CALLS.bed using the dir-derived sample name.
+                        # Older AmpSuite-pipeline used the bam basename in the bed
+                        # filename rather than the sample name, so we must not derive
+                        # the sample name from the bed filename in this case.
+                        for f in dir_contents:
+                            if f.endswith("_CNV_CALLS.bed"):
+                                self.samp_cnv_calls_dct[implied_sname] = fp + "/" + f
+
                     for f in dir_contents:
                         if f.endswith("_run_metadata.json"):
                             implied_sname = rchop(f, "_run_metadata.json")
@@ -280,12 +327,12 @@ class Aggregator:
                             implied_sname = rchop(f, "_sample_metadata.json")
                             self.samp_mdata_dct[implied_sname] = fp + "/" + f
                         elif f.endswith("_CNV_CALLS.bed"):
-                            if fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs"):
-                                suffix = "_cnvkit_outputs" if fp.endswith("_cnvkit_outputs") else "_cnvkit_output"
-                                cnv_sname = rchop(os.path.basename(fp), suffix)
-                            else:
+                            # Only handle _CNV_CALLS.bed here for non-cnvkit dirs.
+                            # cnvkit dirs handle their own _CNV_CALLS.bed above using
+                            # the dir-derived sample name to avoid bam-basename confusion.
+                            if not (fp.endswith("_cnvkit_output") or fp.endswith("_cnvkit_outputs")):
                                 cnv_sname = rchop(f, "_CNV_CALLS.bed")
-                            self.samp_cnv_calls_dct[cnv_sname] = fp + "/" + f
+                                self.samp_cnv_calls_dct[cnv_sname] = fp + "/" + f
 
     def run_amp_classifier(self):
         """
@@ -299,10 +346,6 @@ class Aggregator:
         2. run make_inputs.sh on sample directories
         3. run Amplicon Classifier on each sample
         """
-
-        # for each sample in AA_outputs
-
-        # python3 /files/src/AmpliconSuiteAggregator.py -flist /files/gpunit/inputs/input_list.txt --run_classifier Yes -ref GRCh38
 
         print('************ STARTING AMPLICON CLASSIFIER **************')
         print(f'removing classifier files and directories ending with:\n {CLASSIFIER_FILES}')
@@ -407,11 +450,13 @@ class Aggregator:
                         gdf = df.groupby('Sample name')
                         for sname, group in gdf:
                             print(f'{sname} has {str(len(group))} rows')
-                            # KEY CHANGE: use sname instead of sample_N integer key
-                            runs[sname] = json.loads(group.to_json(orient='records'))
+                            # sample_N key is retained as downstream code depends on it;
+                            # the actual sample name is encoded inside each record dict.
+                            runs[f'sample_{sample_num}'] = json.loads(group.to_json(orient='records'))
                             if sname in sample_to_ac_dir:
                                 print(f"Warning: duplicate sample name {sname} found in multiple result tables.")
-                            sample_to_ac_dir[sname] = os.path.dirname(result_table_fp)
+                            sample_to_ac_dir[f'sample_{sample_num}'] = os.path.dirname(result_table_fp)
+                            sample_num += 1
 
         if not found_res_table:
             print(
@@ -452,25 +497,15 @@ class Aggregator:
         """
         Zips the aggregate results, and deletes files for cleanup
         """
-        clean_dirs(self.samp_AA_dct.values())
+        if not self.NO_CLEAN:
+            clean_dirs(self.samp_AA_dct.values())
         # self.clean_files(self.samp_ckit_dct.values())
         if not failure:
             print(f"Creating {self.aggregated_filename} and cleaning unpacked files...")
             self.tardir(f'{self.root}/results', self.aggregated_filename)
 
-        clean_dirs([f'{self.root}/results', self.DEST_ROOT])  # ./extracted_from_zips
-
-    # def find_file(self, basename):
-    #     """
-    #     Finds a specific file given sample name and file suffix
-    #     """
-    #     for root, dirs, files in os.walk('./results/AA_outputs', topdown = True):
-    #         for file in files:
-    #             fp = os.path.join(root, file)
-    #             if basename == file:
-    #                 return fp.replace('./results/', "")
-    #
-    #     return 'Not Provided'
+        if not self.NO_CLEAN:
+            clean_dirs([f'{self.root}/results', self.DEST_ROOT])  # ./extracted_from_zips
 
     def json_modifications(self):
         """
@@ -521,7 +556,6 @@ class Aggregator:
                 if cbf_hits:
                     cbf = cbf_hits[0]
                     feat_file = f'{self.sample_to_ac_location_dct[sample]}/{cbf}/{feat_basename}'
-                    # print("Feature BED file", feat_file)
                     if os.path.exists(feat_file):
                         feat_file = feat_file.replace(f'{self.root}/results/', "")
                         sample_dct['Feature BED file'] = feat_file
@@ -577,8 +611,9 @@ class Aggregator:
                             sample_dct[feature] = feat_file
 
                         else:
-                            print(
-                                f'Feature: "{feature}" file doesn\'t exist for sample {sample_dct["Sample name"]}: {feat_file}')
+                            if feature not in ['Run metadata JSON', 'Sample metadata JSON']:
+                                print(f'Feature: "{feature}" file doesn\'t exist for sample {sample_dct["Sample name"]}: {feat_file}')
+
                             sample_dct[feature] = "Not Provided"
 
                     else:
@@ -605,7 +640,6 @@ class Aggregator:
 
                 # rename the sample if user specifies
                 if sample_name in self.name_remap:
-                    # print("Renaming sample " + sample_name + " to " + self.name_remap[sample_name])
                     sample_dct['Sample name'] = self.name_remap[sample_name]
                 elif self.name_remap and sample_name not in self.name_remap:
                     sys.stderr.write("Could not rename sample: " + sample_name + "\n")

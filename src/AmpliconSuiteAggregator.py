@@ -4,7 +4,8 @@ import argparse
 import socket
 
 from AmpliconSuiteAggregatorFunctions import *
-from ASA_POST import * 
+from AmpliconSuiteAggregatorFunctions import __version__
+from ASA_POST import *
 
 
 def get_zip_paths(filelist_fp):
@@ -50,6 +51,7 @@ if __name__ == "__main__":
                         default='python3')
     parser.add_argument("-v", "--version", action='version', version=__version__)
     parser.add_argument("--accept_license", choices = ['Yes', 'No'], default = "No", help = "Whether to accept or decline our Creative Commons V4 license: https://raw.githubusercontent.com/AmpliconSuite/AmpliconRepository/main/licenses/CCv4-BY.txt")
+    parser.add_argument("--no_cleanup", action='store_true', default=False, help="Skip cleanup of temporary unpacked files on completion. Helpful for debugging.")
     args = parser.parse_args()
 
     if args.run_classifier == "Yes" and not args.ref:
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     if args.upload_only == 'No':
         # Do the aggregation
         aggregate = Aggregator(filelist, root, args.output_name, args.run_classifier, args.ref, args.python3_path,
-                               args.name_map)
+                               name_remap_file=args.name_map, no_clean=args.no_cleanup)
         if not aggregate.completed:
             sys.stderr.write("Failure to aggregate. Likely a problem with input files!\n")
             sys.exit(1)

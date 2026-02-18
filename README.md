@@ -26,7 +26,6 @@ Aggregates the results from AmpliconSuite
   - *name map*
     - A two column file providing the current identifier for each sample (col 1) and a replacement name (col 2). Enables batch renaming of samples.
 
-
 ## Installation
   - Option 1: Git Clone
     - Step 1: `git clone https://github.com/genepattern/AmpliconSuiteAggregator.git`
@@ -73,5 +72,4 @@ Aggregates the results from AmpliconSuite
   - Python
 
 ## Contact
-For any issues
-  - Edwin Huang, edh021@cloud.ucsd.edu
+For any issues contact Jens Luebeck

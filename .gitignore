@@ -1,6 +1,8 @@
+pypi_api_token
 .idea/
 .DS_Store
 *.pyc
 *.gz
 gpunit/inputs/input_list.txt
 gpunit/inputs/input_list.txt
+src/AmpliconSuiteAggregator.egg-info/

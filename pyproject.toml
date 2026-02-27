@@ -1,9 +1,10 @@
 [project]
 name = "AmpliconSuiteAggregator"
-version = "5.2.0"
+version = "5.3.0"
 authors = [
   { name="Edwin Huang", email="edwin5588@gmail.com" },
   { name="Thorin Tabor", email="tmtabor@cloud.ucsd.edu" },
+  { name = "Jens Luebeck", email="jluebeck@ucsd.edu" },
 ]
 description = "Aggregator tool for multiple Amplicon Architect outputs"
 readme = "README.md"

@@ -481,7 +481,7 @@ class Aggregator:
                         result_table_fp = os.path.join(root, name)
                         found_res_table = True
                         try:
-                            df = pd.read_csv(result_table_fp, delimiter='\t')
+                            df = pd.read_csv(result_table_fp, delimiter='\t', dtype={'Sample name': str})
                             aggregate = pd.concat([aggregate, df], ignore_index=True)
                         except Exception as e:
                             print(e)
@@ -658,6 +658,7 @@ class Aggregator:
         aggregate.to_csv(f'{self.root}/results/aggregated_results.csv')
         aggregate.to_html(f'{self.root}/results/aggregated_results.html')
         self.completed = True
+
 
     def clean_by_suffix(self, suffix, dir):
         if suffix and dir and dir != "/" and suffix != "*":

@@ -3,6 +3,7 @@ pypi_api_token
 .DS_Store
 *.pyc
 *.gz
+*.whl
 gpunit/inputs/input_list.txt
 gpunit/inputs/input_list.txt
 src/AmpliconSuiteAggregator.egg-info/

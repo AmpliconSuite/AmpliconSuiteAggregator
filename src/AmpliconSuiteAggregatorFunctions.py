@@ -15,7 +15,7 @@ import glob
 
 import pandas as pd
 
-__version__ = "5.3"
+__version__ = "5.4.0"
 
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz', 'aln_stage.stderr', '.fai']
 # STRING BELOW CANNOT HAVE ANY SPACES IN IT
@@ -586,6 +586,12 @@ class Aggregator:
                     if feature in sample_dct and sample_dct[feature]:
                         feat_basename = os.path.basename(sample_dct[feature])
                         feat_file = f'{self.sample_to_ac_location_dct[sample]}/files/{feat_basename}'
+                        if not os.path.exists(feat_file):
+                            fallback = f'{self.sample_to_ac_location_dct[sample]}/{feat_basename}'
+                            if os.path.exists(fallback):
+                                print(
+                                    f'Note: "{feature}" found outside /files/ dir for sample {sample_dct["Sample name"]}, using fallback path.')
+                                feat_file = fallback
 
                         if feature == "CNV BED file" and any([feat_file.endswith(x) for x in
                                                               ["AA_CNV_SEEDS.bed", "CNV_CALLS_pre_filtered.bed",

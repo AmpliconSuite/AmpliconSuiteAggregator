@@ -15,7 +15,7 @@ import glob
 
 import pandas as pd
 
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 
 EXCLUSION_LIST = ['.bam', '.fq', '.fastq', '.cram', '.fq.gz', '.fastq.gz', 'aln_stage.stderr', '.fai']
 # STRING BELOW CANNOT HAVE ANY SPACES IN IT
@@ -243,6 +243,8 @@ class Aggregator:
             dirs[:] = [d for d in dirs if "__MACOSX" not in d and "DS_Store" not in d]
             for d in dirs:
                 fp = os.path.join(root, d)
+                if "extracted_from_zips" in fp:
+                    continue
                 if is_valid_aa_dir(fp):
                     if not d.endswith("_AA_results"):
                         print(f"Warning: found valid AA results dir with unexpected name: {fp}")

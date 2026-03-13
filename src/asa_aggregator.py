@@ -84,15 +84,15 @@ MISC_AA_SUFFIXES: Tuple[str, ...] = (
 # Each entry: suffix, has_header (True/False/None=optional file), is_dir
 AC_MERGE_TARGETS: List[Dict] = [
     {"suffix": "_amplicon_classification_profiles.tsv", "has_header": True,  "is_dir": False},
-    {"suffix": "_annotated_cycles_files",               "has_header": None,  "is_dir": True},
-    {"suffix": "_classification_bed_files",             "has_header": None,  "is_dir": True},
+    {"suffix": "_annotated_cycles_files",               "has_header": None,  "is_dir": True,  "rescue_suffix": "_annotated_cycles.txt"},
+    {"suffix": "_classification_bed_files",             "has_header": None,  "is_dir": True,  "rescue_suffix": "_intervals.bed"},
     {"suffix": "_ecDNA_context_calls.tsv",              "has_header": False, "is_dir": False},  # no header, may not exist
     {"suffix": "_ecDNA_counts.tsv",                     "has_header": True,  "is_dir": False},
     {"suffix": "_feature_basic_properties.tsv",         "has_header": True,  "is_dir": False},
     {"suffix": "_feature_entropy.tsv",                  "has_header": True,  "is_dir": False},
     {"suffix": "_gene_list.tsv",                        "has_header": True,  "is_dir": False},
     {"suffix": "_result_table.tsv",                     "has_header": True,  "is_dir": False},
-    {"suffix": "_SV_summaries",                         "has_header": None,  "is_dir": True},
+    {"suffix": "_SV_summaries",                         "has_header": None,  "is_dir": True,  "rescue_suffix": "_SV_summary.tsv"},
 ]
 
 # Columns in result_table.tsv that hold file paths needing re-resolution

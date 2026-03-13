@@ -986,7 +986,8 @@ class Aggregator:
             if is_dir:
                 out_path = os.path.join(self.classif_dir, out_name)
                 os.makedirs(out_path, exist_ok=True)
-                self._merge_ac_subdirs(suffix, out_path)
+                self._merge_ac_subdirs(suffix, out_path,
+                                       rescue_suffix=target.get("rescue_suffix", ""))
             else:
                 out_path = os.path.join(self.classif_dir, out_name)
                 self._merge_ac_tsvs(suffix, out_path, has_header=has_hdr)
@@ -1049,14 +1050,21 @@ class Aggregator:
         print(f"  Merged {len(sources)} file(s) -> {os.path.basename(out_path)} "
               f"({lines_written} data line(s))")
 
-    def _merge_ac_subdirs(self, suffix: str, out_dir: str) -> None:
+    def _merge_ac_subdirs(self, suffix: str, out_dir: str,
+                           rescue_suffix: str = "") -> None:
         """
         Copy all files from every subdirectory matching suffix across all
         classification dirs into the flat output directory out_dir.
         Filename collisions are handled by appending a numeric suffix.
+
+        If no matching subdirs are found and rescue_suffix is set, falls back
+        to _rescue_amplicon_files() to gather scattered files from classification
+        dirs, their files/ subdirs, and all known AA results dirs.
         """
         sources = self._find_ac_dirs(suffix)
         if not sources:
+            if rescue_suffix:
+                self._rescue_amplicon_files(rescue_suffix, out_dir)
             return
 
         files_copied = 0
@@ -1074,6 +1082,42 @@ class Aggregator:
 
         print(f"  Merged {len(sources)} dir(s) -> {os.path.basename(out_dir)}/ "
               f"({files_copied} file(s))")
+
+    def _rescue_amplicon_files(self, file_suffix: str, out_dir: str) -> None:
+        """
+        Fallback when no AC output subdir was found for a dir-type merge target.
+        Searches classification dirs, their files/ subdirs, and all known AA
+        results dirs for files matching *_amplicon*<file_suffix>, then copies
+        them flat into out_dir.
+        """
+        search_dirs: List[str] = (
+            list(self.classification_dirs)
+            + list(self._files_dirs.values())
+            + [rec.aa_results_dir for rec in self.sample_registry.values()
+               if rec.aa_results_dir and os.path.isdir(rec.aa_results_dir)]
+        )
+
+        found = 0
+        seen: set = set()
+        for search_dir in search_dirs:
+            try:
+                for fname in os.listdir(search_dir):
+                    if fname.startswith("."):
+                        continue
+                    if "_amplicon" not in fname or not fname.endswith(file_suffix):
+                        continue
+                    src = os.path.join(search_dir, fname)
+                    if not os.path.isfile(src) or src in seen:
+                        continue
+                    seen.add(src)
+                    shutil.copy2(src, self._unique_dest(out_dir, fname))
+                    found += 1
+            except OSError:
+                continue
+
+        if found:
+            print(f"  Rescued {found} scattered file(s) -> "
+                  f"{os.path.basename(out_dir)}/ (suffix: {file_suffix})")
 
     def _find_ac_files(self, suffix: str) -> List[str]:
         """

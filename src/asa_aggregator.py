@@ -40,6 +40,16 @@ EXCLUSION_SUFFIXES: Tuple[str, ...] = (
     ".call.cns.gz", ".cnr.gz",
 )
 
+# Additional exclusions applied only when copying a sample's AA results directory
+AA_DIR_EXCLUSION_SUFFIXES: Tuple[str, ...] = EXCLUSION_SUFFIXES + (
+    "_cnseg.txt", "_edges.txt", "_logs.txt", ".out",
+)
+
+# Additional exclusions applied only when copying AA results directories
+AA_DIR_EXCLUSION_SUFFIXES: Tuple[str, ...] = EXCLUSION_SUFFIXES + (
+    "_cnseg.txt", "_edges.txt", "_logs.txt", ".out",
+)
+
 # Recognised archive extensions (in priority order for nested extraction)
 ARCHIVE_EXTENSIONS: Tuple[str, ...] = (".tar.gz", ".tar", ".zip")
 
@@ -89,7 +99,8 @@ PATH_COLUMNS: Tuple[str, ...] = (
     "CNV BED file",
     "AA PNG file",
     "AA PDF file",
-    "AA summary file",
+    "AA cycles file",
+    "AA graph file",
     "Run metadata JSON",
     "Sample metadata JSON",
 )
@@ -105,7 +116,8 @@ AGG_CSV_COLUMNS: Tuple[str, ...] = (
     "Feature median copy number", "Feature maximum copy number", "Filter flag",
     "Reference version", "Tissue of origin", "Sample type",
     "Feature BED file", "CNV BED file", "AA PNG file", "AA PDF file",
-    "AA summary file", "Run metadata JSON", "Sample metadata JSON", "All genes",
+    "AA cycles file", "AA graph file",
+    "Run metadata JSON", "Sample metadata JSON", "All genes",
 )
 
 # Canonical column order for run.json feature dicts (mirrors result_table + extras)
@@ -129,7 +141,8 @@ RUN_JSON_COLUMNS: Tuple[str, ...] = (
     "CNV BED file",
     "AA PNG file",
     "AA PDF file",
-    "AA summary file",
+    "AA cycles file",
+    "AA graph file",
     "Run metadata JSON",
     "Sample metadata JSON",
     "AA directory",
@@ -181,12 +194,9 @@ class SampleRecord:
     ac_source_dir: Optional[str] = None
 
     # Output-tree destination paths — set by Stage 5, consumed by Stage 6
-    aa_tarball:     Optional[str] = None  # results/samples/[s]/[s]_AA_results.tar.gz
+    aa_dir_dest:    Optional[str] = None  # results/samples/[s]/[s]_AA_results/ (uncompressed dir)
     cnvkit_tarball: Optional[str] = None  # results/samples/[s]/[s]_cnvkit_output.tar.gz
     cnv_bed_dest:   Optional[str] = None  # results/samples/[s]/[s]_CNV_CALLS.bed (uncompressed)
-    # Loose AA files copied alongside the tarball for run.json path references.
-    # { amplicon_num -> { 'pdf': path, 'png': path }, 'summary': path }
-    aa_loose_files: Dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +358,20 @@ def safe_copy_file(src: str, dest: str) -> bool:
         return False
 
 
-def safe_copytree(src: str, dest: str) -> bool:
+def safe_copytree(src: str, dest: str,
+                  exclusions: Tuple[str, ...] = ()) -> bool:
     """
-    Recursively copy a directory tree from src to dest.
+    Recursively copy a directory tree from src to dest,
+    skipping files whose names end with any suffix in exclusions.
     Returns True on success, False on failure.
     """
+    def _ignore(directory: str, contents: list) -> list:
+        return [f for f in contents
+                if any(f.endswith(e) for e in exclusions)]
+
     try:
-        shutil.copytree(src, dest, dirs_exist_ok=True)
+        shutil.copytree(src, dest, dirs_exist_ok=True,
+                        ignore=_ignore if exclusions else None)
         return True
     except Exception as e:
         print(f"Warning: could not copy tree {src} -> {dest}: {e}")

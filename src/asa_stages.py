@@ -16,6 +16,7 @@ Stages:
 from __future__ import annotations
 
 import json
+import time
 import os
 import shutil
 import sys
@@ -27,7 +28,7 @@ import pandas as pd
 
 from asa_aggregator import (
     # constants
-    ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, MISC_AA_SUFFIXES,
+    ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, AA_DIR_EXCLUSION_SUFFIXES, MISC_AA_SUFFIXES,
     AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
     NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
@@ -82,6 +83,7 @@ class Aggregator:
         self.name_map = read_name_map(name_map_file)
         self.no_cleanup = no_cleanup
         self.completed = False
+        self._start_time: float = time.perf_counter()
 
         self.work_dir    = os.path.abspath(work_dir) if work_dir else os.path.abspath(".")
         self.extract_dir = os.path.join(self.work_dir, EXTRACTION_DIR)
@@ -157,6 +159,20 @@ class Aggregator:
 
     def _stage2_extract(self) -> None:
         print("\n--- Stage 2: Extraction ---")
+        self._input_size_bytes = 0
+        for path in self.input_paths:
+            abs_path_size = os.path.abspath(path)
+            if os.path.isfile(abs_path_size):
+                self._input_size_bytes += os.path.getsize(abs_path_size)
+            elif os.path.isdir(abs_path_size):
+                for dirpath, _, fnames in os.walk(abs_path_size):
+                    for fn in fnames:
+                        try:
+                            self._input_size_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                        except OSError:
+                            pass
+        input_mb = self._input_size_bytes / (1024 * 1024)
+        print(f"  Input size: {input_mb:.2f} MB ({len(self.input_paths)} source(s))")
         for path in self.input_paths:
             abs_path = os.path.abspath(path)
             if os.path.isdir(abs_path):
@@ -352,7 +368,9 @@ class Aggregator:
                         parent_name = os.path.basename(root)
                         if not (parent_name.endswith("_cnvkit_output")
                                 or parent_name.endswith("_cnvkit_outputs")):
-                            sname = self._cnv_bed_sample_name(fname)
+                            sname = self._cnv_bed_sample_name(
+                                fname, parent_name,
+                                known_snames=set(self.sample_registry.keys()))
                             if sname not in self._floating_cnv_beds:
                                 self._floating_cnv_beds[sname] = fpath
                                 print(f"  Floating CNV : {sname} -> {fpath}")
@@ -481,9 +499,42 @@ class Aggregator:
             return None
 
     @staticmethod
-    def _cnv_bed_sample_name(fname: str) -> str:
+    def _cnv_bed_sample_name(fname: str, parent_dir_name: str = "",
+                              known_snames: Optional[set] = None) -> str:
+        """
+        Derive a sample name from a CNV BED filename.
+
+        Handled patterns (in priority order):
+          1. [sname]_CNV_CALLS.bed                    -> sname (no dots in prefix)
+          2. [sname].cs.rmdup_CNV_CALLS.bed           -> sname if prefix matches a known sample
+          3. [sname].[anything]_CNV_CALLS.bed         -> sname (truncate at first dot)
+          4. [any_prefix].cs.rmdup_CNV_CALLS.bed
+             where prefix is not a known sample name  -> parent_dir_name (directory fallback)
+             e.g. /path/SAMPLE/ERR3345421.cs.rmdup_CNV_CALLS.bed -> "SAMPLE"
+
+        Note: inside a [sname]_cnvkit_output/ dir, sname is already known from
+        the directory name so _cnv_bed_sample_name is not used — any file ending
+        in _CNV_CALLS.bed (including .cs.rmdup_CNV_CALLS.bed) is accepted directly.
+        """
         prefix = rchop(fname, "_CNV_CALLS.bed")
-        return prefix.split(".")[0] if "." in prefix else prefix
+
+        # Case 1: no dots — sample name is unambiguous
+        if "." not in prefix:
+            return prefix
+
+        # Cases 2/3: prefix contains dots
+        pre_dot = prefix.split(".")[0]
+
+        # Case 2: check if the pre-dot part matches a known sample name
+        if known_snames and pre_dot in known_snames:
+            return pre_dot
+
+        # Case 4: .cs.rmdup pattern with unrecognised prefix — use parent dir name
+        if fname.endswith(".cs.rmdup_CNV_CALLS.bed") and parent_dir_name:
+            return parent_dir_name
+
+        # Case 3: fallback — truncate at first dot
+        return pre_dot
 
     # ==================================================================
     # Stage 4 — result_table parser + sample registry reconciliation
@@ -640,7 +691,7 @@ class Aggregator:
         Build the physical results/ tree:
 
           results/samples/[sname]/
-              [sname]_AA_results.tar.gz
+              [sname]_AA_results/            (uncompressed dir)
               [sname]_cnvkit_output.tar.gz
               [sname]_CNV_CALLS.bed          (uncompressed copy)
               [sname]_run_metadata.json      (if found)
@@ -696,8 +747,8 @@ class Aggregator:
         sample_out = os.path.join(self.samples_dir, sname)
         os.makedirs(sample_out, exist_ok=True)
 
-        # ---- AA results tarball -----------------------------------------
-        rec.aa_tarball = self._build_aa_tarball(sname, rec, sample_out)
+        # ---- AA results directory (uncompressed copy) ------------------
+        rec.aa_dir_dest = self._copy_aa_results_dir(sname, rec, sample_out)
 
         # ---- cnvkit tarball ---------------------------------------------
         rec.cnvkit_tarball = self._build_cnvkit_tarball(sname, rec, sample_out)
@@ -719,61 +770,49 @@ class Aggregator:
                 dest = os.path.join(sample_out, dest_name)
                 safe_copy_file(src, dest)
 
-        # ---- Loose AA file copies for run.json path references ----------
-        # AA summary, per-amplicon PDF and PNG live inside the tarball but
-        # run.json must point to loose files.  Copy them alongside the tar.
-        rec.aa_loose_files = self._copy_loose_aa_files(sname, rec, sample_out)
-
         print(f"  Built sample dir: {sname}")
 
-    def _build_aa_tarball(self, sname: str, rec: SampleRecord,
-                          sample_out: str) -> Optional[str]:
+    def _copy_aa_results_dir(self, sname: str, rec: SampleRecord,
+                              sample_out: str) -> Optional[str]:
         """
-        Build [sname]_AA_results.tar.gz in sample_out.
+        Copy AA results into sample_out/[sname]_AA_results/ (uncompressed).
 
         Priority:
-          1. Use rec.aa_results_dir (canonical dir) — tar its contents directly.
-          2. Synthesise a [sname]_AA_results/ staging dir from individual files:
+          1. Use rec.aa_results_dir (canonical dir) — copy tree directly.
+          2. Synthesise a [sname]_AA_results/ dir from individual files:
              a. amplicon_files (pdf, png, cycles, graph) from rec
              b. aa_summary_file from rec
              c. Fall back to files/ subdir of any classification dir for this sample
-          3. If nothing found, return NOT_PROVIDED.
+          3. If nothing found, return None.
         """
-        tar_name = f"{sname}_AA_results.tar.gz"
-        tar_dest = os.path.join(sample_out, tar_name)
+        dest_dir = os.path.join(sample_out, f"{sname}_AA_results")
 
         if rec.aa_results_dir and os.path.isdir(rec.aa_results_dir):
-            make_tarball(rec.aa_results_dir, tar_dest)
-            return tar_dest
+            safe_copytree(rec.aa_results_dir, dest_dir,
+                          exclusions=AA_DIR_EXCLUSION_SUFFIXES)
+            return dest_dir
 
-        # Synthesise a staging directory
-        staging = os.path.join(sample_out, f"{sname}_AA_results")
-        os.makedirs(staging, exist_ok=True)
+        # Synthesise from individual files
+        os.makedirs(dest_dir, exist_ok=True)
         found_any = False
 
-        # From indexed amplicon files
         for amp_num, file_dict in rec.amplicon_files.items():
             for key, src in file_dict.items():
                 if src and os.path.isfile(src):
-                    shutil.copy2(src, staging)
+                    shutil.copy2(src, dest_dir)
                     found_any = True
 
-        # Summary file
         if rec.aa_summary_file and os.path.isfile(rec.aa_summary_file):
-            shutil.copy2(rec.aa_summary_file, staging)
+            shutil.copy2(rec.aa_summary_file, dest_dir)
             found_any = True
 
-        # Fallback: look in the files/ subdir of classification dirs
         if not found_any:
-            found_any = self._pull_aa_files_from_files_dirs(sname, staging)
+            found_any = self._pull_aa_files_from_files_dirs(sname, dest_dir)
 
         if found_any:
-            make_tarball(staging, tar_dest)
-            shutil.rmtree(staging, ignore_errors=True)
-            return tar_dest
+            return dest_dir
 
-        # Nothing at all — clean up empty staging dir
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(dest_dir, ignore_errors=True)
         print(f"  Warning: no AA results found for '{sname}' — AA directory: Not Provided")
         return None
 
@@ -1017,81 +1056,6 @@ class Aggregator:
     # ==================================================================
 
 
-    def _copy_loose_aa_files(self, sname: str, rec: SampleRecord,
-                              sample_out: str) -> Dict:
-        """
-        Copy AA summary and per-amplicon PDF/PNG files loose into sample_out
-        so that run.json can reference them as standalone paths.
-
-        Resolution priority per amplicon:
-          1. rec.amplicon_files[num] — indexed from the canonical AA results dir
-          2. self._files_dirs — files/ subdir copies inside classification dirs
-
-        Returns a dict:
-          { amp_num -> { 'pdf': dest_path, 'png': dest_path },
-            'summary': dest_path }
-        """
-        loose: Dict = {}
-
-        # ── Summary file ────────────────────────────────────────────────────
-        summary_src = rec.aa_summary_file
-        # Also check files/ subdirs as fallback
-        if not summary_src or not os.path.isfile(summary_src):
-            summary_src = self._find_in_files_dirs(f"{sname}_summary.txt")
-        if summary_src and os.path.isfile(summary_src):
-            dest = os.path.join(sample_out, f"{sname}_summary.txt")
-            if safe_copy_file(summary_src, dest):
-                loose['summary'] = dest
-
-        # ── Per-amplicon PDF and PNG ────────────────────────────────────────
-        # Collect all amplicon numbers known from indexed files
-        amp_nums: set = set(rec.amplicon_files.keys())
-        # Also scan files/ dirs to find any we may have missed
-        amp_nums.update(self._scan_amplicon_nums_in_files_dirs(sname))
-
-        for num in sorted(amp_nums):
-            amp_entry: Dict = {}
-            for ext, key in ((".pdf", "pdf"), (".png", "png")):
-                fname = f"{sname}_amplicon{num}{ext}"
-                # Priority 1: indexed from canonical AA results dir
-                src = rec.amplicon_files.get(num, {}).get(key)
-                # Priority 2: files/ subdir fallback
-                if not src or not os.path.isfile(src):
-                    src = self._find_in_files_dirs(fname)
-                if src and os.path.isfile(src):
-                    dest = os.path.join(sample_out, fname)
-                    if safe_copy_file(src, dest):
-                        amp_entry[key] = dest
-            if amp_entry:
-                loose[num] = amp_entry
-
-        return loose
-
-    def _find_in_files_dirs(self, fname: str) -> Optional[str]:
-        """Search all known files/ subdirs for a file with the given name."""
-        for files_dir in self._files_dirs.values():
-            candidate = os.path.join(files_dir, fname)
-            if os.path.isfile(candidate):
-                return candidate
-        return None
-
-    def _scan_amplicon_nums_in_files_dirs(self, sname: str) -> List[int]:
-        """
-        Return amplicon numbers found in files/ subdirs for sname,
-        by scanning for [sname]_amplicon[N].pdf filenames.
-        """
-        nums: List[int] = []
-        for files_dir in self._files_dirs.values():
-            try:
-                for fname in os.listdir(files_dir):
-                    if fname.startswith(f"{sname}_amplicon") and fname.endswith(".pdf"):
-                        num = self._parse_amplicon_num(fname, sname)
-                        if num is not None and num not in nums:
-                            nums.append(num)
-            except OSError:
-                pass
-        return nums
-
     # ==================================================================
     # Stage 6 — run.json constructor
     # ==================================================================
@@ -1180,19 +1144,25 @@ class Aggregator:
         # ── Write aggregated_results.csv ──────────────────────────────────
         # List fields rendered as Python repr strings e.g. ['EGFR', 'MYC'].
         # Columns are AGG_CSV_COLUMNS subset in spec order (no AA/cnvkit dir).
+        # Rows sorted by: Sample name, AA amplicon number, Feature ID.
         import csv as _csv
+        all_flat_rows = [row for rows in self.run_json_groups.values() for row in rows]
+        all_flat_rows.sort(key=lambda r: (
+            str(r.get("Sample name", "")),
+            int(r.get("AA amplicon number", 0)) if str(r.get("AA amplicon number", "")).isdigit() else 0,
+            str(r.get("Feature ID", "")),
+        ))
         csv_path = os.path.join(self.results_dir, "aggregated_results.csv")
         with open(csv_path, "w", newline="") as fh:
             writer = _csv.writer(fh)
             writer.writerow(AGG_CSV_COLUMNS)
-            for rows in self.run_json_groups.values():
-                for row in rows:
-                    cells = []
-                    for col in AGG_CSV_COLUMNS:
-                        v = row.get(col, NOT_PROVIDED)
-                        cells.append(str(v) if isinstance(v, list) else
-                                     ("" if v is None else str(v)))
-                    writer.writerow(cells)
+            for row in all_flat_rows:
+                cells = []
+                for col in AGG_CSV_COLUMNS:
+                    v = row.get(col, NOT_PROVIDED)
+                    cells.append(str(v) if isinstance(v, list) else
+                                 ("" if v is None else str(v)))
+                writer.writerow(cells)
         print(f"  Wrote aggregated_results.csv")
 
     # ------------------------------------------------------------------
@@ -1238,16 +1208,13 @@ class Aggregator:
         row["AA PDF file"] = self._resolve_amplicon_file(
             rec, amp_num, "pdf", sname)
 
-        # ── AA summary file ──────────────────────────────────────────────
-        if rec and rec.aa_loose_files.get("summary"):
-            summary_path = rec.aa_loose_files["summary"]
-            if os.path.isfile(summary_path):
-                row["AA summary file"] = relative_to_results(
-                    summary_path, self.results_dir)
-            else:
-                row["AA summary file"] = NOT_PROVIDED
-        else:
-            row["AA summary file"] = NOT_PROVIDED
+        # ── AA cycles file ────────────────────────────────────────────────
+        row["AA cycles file"] = self._resolve_amplicon_file(
+            rec, amp_num, "cycles", sname)
+
+        # ── AA graph file ─────────────────────────────────────────────────
+        row["AA graph file"] = self._resolve_amplicon_file(
+            rec, amp_num, "graph", sname)
 
         # ── Run metadata JSON ────────────────────────────────────────────
         row["Run metadata JSON"] = self._resolve_misc_path(
@@ -1258,9 +1225,9 @@ class Aggregator:
             rec, "sample_metadata_json", sname, "_sample_metadata.json")
 
         # ── AA directory ─────────────────────────────────────────────────
-        if rec and rec.aa_tarball and os.path.isfile(rec.aa_tarball):
+        if rec and rec.aa_dir_dest and os.path.isdir(rec.aa_dir_dest):
             row["AA directory"] = relative_to_results(
-                rec.aa_tarball, self.results_dir)
+                rec.aa_dir_dest, self.results_dir)
         else:
             row["AA directory"] = NOT_PROVIDED
 
@@ -1287,15 +1254,19 @@ class Aggregator:
                                 amp_num: Optional[int],
                                 key: str, sname: str) -> str:
         """
-        Resolve a per-amplicon file (pdf or png) for a given amplicon number.
-        Uses rec.aa_loose_files populated by Stage 5.
+        Resolve a per-amplicon file (pdf, png, cycles, graph) for a given amplicon number.
+        Looks for the file inside rec.aa_dir_dest (the uncompressed AA results dir).
         Returns a results-relative path, or NOT_PROVIDED.
         """
-        if rec is None or amp_num is None:
+        if rec is None or amp_num is None or not rec.aa_dir_dest:
             return NOT_PROVIDED
-        amp_entry = rec.aa_loose_files.get(amp_num, {})
-        path = amp_entry.get(key)
-        if path and os.path.isfile(path):
+        ext_map = {"pdf": ".pdf", "png": ".png",
+                   "cycles": "_cycles.txt", "graph": "_graph.txt"}
+        ext = ext_map.get(key)
+        if not ext:
+            return NOT_PROVIDED
+        path = os.path.join(rec.aa_dir_dest, f"{sname}_amplicon{amp_num}{ext}")
+        if os.path.isfile(path):
             return relative_to_results(path, self.results_dir)
         return NOT_PROVIDED
 
@@ -1303,7 +1274,7 @@ class Aggregator:
                             attr: str, sname: str, suffix: str) -> str:
         """
         Resolve a miscellaneous file (metadata JSON, etc.) that was copied
-        loose into the sample dir by Stage 5.
+        placed into the sample dir by Stage 5.
         Falls back to checking the sample dir directly by expected filename.
         Returns a results-relative path, or NOT_PROVIDED.
         """
@@ -1338,7 +1309,20 @@ class Aggregator:
                                       f"{self.project_name}.tar.gz")
         print(f"  Writing: {output_archive}")
         make_tarball(self.results_dir, output_archive)
-        size_mb = os.path.getsize(output_archive) / (1024 * 1024)
-        print(f"  Archive size: {size_mb:.2f} MB")
+        output_bytes = os.path.getsize(output_archive)
+        output_mb = output_bytes / (1024 * 1024)
+        input_bytes = getattr(self, "_input_size_bytes", 0)
+        print(f"  Output archive: {output_mb:.2f} MB")
+        if input_bytes > 0:
+            input_mb = input_bytes / (1024 * 1024)
+            ratio = output_bytes / input_bytes
+            print(f"  Size change: {input_mb:.2f} MB -> {output_mb:.2f} MB "
+                  f"({ratio:.2f}x, {(1 - ratio) * 100:.1f}% reduction)")
         self._cleanup(failure=False)
+        elapsed = time.perf_counter() - self._start_time
+        minutes, seconds = divmod(elapsed, 60)
+        if minutes >= 1:
+            print(f"  Total time: {int(minutes)}m {seconds:.1f}s")
+        else:
+            print(f"  Total time: {elapsed:.1f}s")
         print(f"  Done.")

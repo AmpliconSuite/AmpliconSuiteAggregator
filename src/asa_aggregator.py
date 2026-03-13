@@ -40,14 +40,15 @@ EXCLUSION_SUFFIXES: Tuple[str, ...] = (
     ".call.cns.gz", ".cnr.gz",
 )
 
-# Additional exclusions applied only when copying a sample's AA results directory
-AA_DIR_EXCLUSION_SUFFIXES: Tuple[str, ...] = EXCLUSION_SUFFIXES + (
-    "_cnseg.txt", "_edges.txt", "_logs.txt", ".out",
-)
+# Legacy CNV BED suffix (pre-dates _CNV_CALLS.bed naming).
+# Covers both [sname]_uncorr_CN.bed and [sname].cs.rmdup_uncorr_CN.bed —
+# the .cs.rmdup prefix is handled by the same dot-split logic as _CNV_CALLS.bed.
+LEGACY_CNV_BED_SUFFIX: str = "_uncorr_CN.bed"
 
-# Additional exclusions applied only when copying AA results directories
-AA_DIR_EXCLUSION_SUFFIXES: Tuple[str, ...] = EXCLUSION_SUFFIXES + (
-    "_cnseg.txt", "_edges.txt", "_logs.txt", ".out",
+# Whitelist of file suffixes kept when copying a sample's AA results directory.
+# Anything not matching one of these suffixes is dropped (hidden files are always dropped).
+AA_DIR_INCLUDE_SUFFIXES: Tuple[str, ...] = (
+    "_graph.txt", "_cycles.txt", ".png", ".pdf", "_summary.txt", ".log",
 )
 
 # Recognised archive extensions (in priority order for nested extraction)
@@ -70,6 +71,7 @@ AC_RESULT_TABLE_SUFFIX = "_result_table.tsv"
 # Miscellaneous per-sample AA files (found as siblings to _AA_results/)
 MISC_AA_SUFFIXES: Tuple[str, ...] = (
     "_AA_CNV_SEEDS.bed",
+    "_CNV_CALLS_unfiltered_gains.bed",
     "_finish_flag.txt",
     "_run_metadata.json",
     "_sample_metadata.json",
@@ -176,6 +178,7 @@ class SampleRecord:
 
     # Individual files (absolute paths)
     cnv_calls_bed: Optional[str] = None        # [name]_CNV_CALLS.bed  (canonical copy)
+    cnv_calls_unfiltered_gains_bed: Optional[str] = None  # [name]_CNV_CALLS_unfiltered_gains.bed
     run_metadata_json: Optional[str] = None
     sample_metadata_json: Optional[str] = None
     aa_cnv_seeds_bed: Optional[str] = None
@@ -307,7 +310,7 @@ def is_classification_dir(dirpath: str) -> Tuple[bool, Optional[str], Optional[s
     except OSError:
         return False, None, None
 
-    profiles_files = [f for f in entries if f.endswith(AC_PROFILES_SUFFIX) and not f.startswith("._")]
+    profiles_files = [f for f in entries if f.endswith(AC_PROFILES_SUFFIX) and not f.startswith(".")]
     if not profiles_files:
         return False, None, None
 
@@ -335,9 +338,9 @@ def make_tarball(source_dir: str, dest_tar_path: str,
     parent = os.path.dirname(source_dir)
     with tarfile.open(dest_tar_path, "w:gz") as tar:
         for root, dirs, files in os.walk(source_dir):
-            dirs[:] = [d for d in dirs if d not in ("__MACOSX", ".DS_Store")]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__MACOSX"]
             for fname in files:
-                if any(fname.endswith(excl) for excl in exclusions):
+                if fname.startswith(".") or any(fname.endswith(excl) for excl in exclusions):
                     continue
                 fpath = os.path.join(root, fname)
                 arcname = os.path.relpath(fpath, parent)
@@ -359,19 +362,31 @@ def safe_copy_file(src: str, dest: str) -> bool:
 
 
 def safe_copytree(src: str, dest: str,
-                  exclusions: Tuple[str, ...] = ()) -> bool:
+                  exclusions: Tuple[str, ...] = (),
+                  inclusions: Tuple[str, ...] = ()) -> bool:
     """
-    Recursively copy a directory tree from src to dest,
-    skipping files whose names end with any suffix in exclusions.
+    Recursively copy a directory tree from src to dest.
+    Hidden names (starting with '.') are always skipped.
+    If inclusions is non-empty, only files whose names end with one of those
+    suffixes are copied (directories are always descended into).
+    Otherwise, files whose names end with any suffix in exclusions are skipped.
     Returns True on success, False on failure.
     """
     def _ignore(directory: str, contents: list) -> list:
-        return [f for f in contents
-                if any(f.endswith(e) for e in exclusions)]
+        ignored = []
+        for f in contents:
+            if f.startswith("."):
+                ignored.append(f)
+            elif inclusions:
+                full = os.path.join(directory, f)
+                if os.path.isfile(full) and not any(f.endswith(s) for s in inclusions):
+                    ignored.append(f)
+            elif any(f.endswith(e) for e in exclusions):
+                ignored.append(f)
+        return ignored
 
     try:
-        shutil.copytree(src, dest, dirs_exist_ok=True,
-                        ignore=_ignore if exclusions else None)
+        shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_ignore)
         return True
     except Exception as e:
         print(f"Warning: could not copy tree {src} -> {dest}: {e}")

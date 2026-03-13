@@ -28,7 +28,8 @@ import pandas as pd
 
 from asa_aggregator import (
     # constants
-    ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, AA_DIR_EXCLUSION_SUFFIXES, MISC_AA_SUFFIXES,
+    ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, AA_DIR_INCLUDE_SUFFIXES, MISC_AA_SUFFIXES,
+    LEGACY_CNV_BED_SUFFIX,
     AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
     NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
@@ -70,6 +71,10 @@ class Aggregator:
       completed         — True only after successful _finalise()
     """
 
+    # Below this many samples, print per-item discovery and build lines.
+    # Above it, suppress them and show periodic progress instead.
+    VERBOSE_THRESHOLD: int = 20
+
     def __init__(
         self,
         input_paths: List[str],
@@ -84,6 +89,10 @@ class Aggregator:
         self.no_cleanup = no_cleanup
         self.completed = False
         self._start_time: float = time.perf_counter()
+        self.aggregated_filename: str = os.path.join(
+            os.path.abspath(work_dir) if work_dir else os.path.abspath("."),
+            f"{self.project_name}.tar.gz"
+        )
 
         self.work_dir    = os.path.abspath(work_dir) if work_dir else os.path.abspath(".")
         self.extract_dir = os.path.join(self.work_dir, EXTRACTION_DIR)
@@ -205,7 +214,7 @@ class Aggregator:
         print(f"  Copying directory: {src_dir} -> {dest}")
         try:
             shutil.copytree(src_dir, dest,
-                            ignore=shutil.ignore_patterns("__MACOSX", ".DS_Store"))
+                            ignore=shutil.ignore_patterns(".*", "__MACOSX"))
         except Exception as e:
             print(f"  Warning: error copying directory {src_dir}: {e}")
 
@@ -227,13 +236,16 @@ class Aggregator:
             if archive_path.endswith(".zip"):
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     members = [m for m in zf.namelist()
-                               if not m.startswith("__MACOSX") and ".DS_Store" not in m]
+                               if not m.startswith("__MACOSX")
+                               and not any(part not in (".", "..") and part.startswith(".")
+                                           for part in m.split("/") if part)]
                     zf.extractall(dest, members=members)
             else:
                 with tarfile.open(archive_path, "r:*") as tf:
                     members = [m for m in tf.getmembers()
                                if not m.name.startswith("__MACOSX")
-                               and ".DS_Store" not in m.name]
+                               and not any(part not in (".", "..") and part.startswith(".")
+                                           for part in m.name.split("/") if part)]
                     tf.extractall(dest, members=members)
             print(f"  Extracted: {archive_path} -> {dest}")
             return dest
@@ -247,7 +259,7 @@ class Aggregator:
         archives = []
         for root, dirs, files in os.walk(self.extract_dir):
             dirs[:] = [d for d in dirs
-                       if d not in ("__MACOSX",) and ".DS_Store" not in d]
+                       if not d.startswith(".") and d != "__MACOSX"]
             for fname in files:
                 if any(fname.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
                     archives.append(os.path.join(root, fname))
@@ -276,7 +288,7 @@ class Aggregator:
 
         for root, dirs, files in os.walk(self.extract_dir, topdown=True):
             dirs[:] = [d for d in dirs
-                       if d not in ("__MACOSX",) and ".DS_Store" not in d]
+                       if not d.startswith(".") and d != "__MACOSX"]
 
             # 3a. Classify sub-directories
             for dname in list(dirs):
@@ -287,7 +299,8 @@ class Aggregator:
                     dcontents = set()
 
                 if "AUX_DIR" in dcontents:
-                    print(f"  AUX dir found: {dpath}")
+                    if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+                        print(f"  AUX dir found: {dpath}")
                     self.aux_dirs.append(dpath)
                     dirs.remove(dname)
                     continue
@@ -321,9 +334,10 @@ class Aggregator:
                               f"keeping first: {rec.cnvkit_dir}")
                     else:
                         rec.cnvkit_dir = dpath
-                        print(f"  cnvkit dir   : {sname} -> {dpath}")
+                        if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+                            print(f"  cnvkit dir   : {sname} -> {dpath}")
                         for fname in dcontents:
-                            if fname.endswith("_CNV_CALLS.bed"):
+                            if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
                                 rec.cnv_calls_bed = os.path.join(dpath, fname)
                                 break
                     dirs.remove(dname)
@@ -332,7 +346,8 @@ class Aggregator:
                 is_cls, _profiles, _rt = is_classification_dir(dpath)
                 if is_cls:
                     self.classification_dirs.append(dpath)
-                    print(f"  Classif dir  : {dpath}")
+                    if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+                        print(f"  Classif dir  : {dpath}")
                     files_sub = os.path.join(dpath, "files")
                     if os.path.isdir(files_sub):
                         self._files_dirs[dpath] = files_sub
@@ -343,7 +358,7 @@ class Aggregator:
             # 3b. Scan files at this level
             for fname in files:
                 fpath = os.path.join(root, fname)
-                if fname.startswith("._"):
+                if fname.startswith("."):
                     continue
 
                 matched = False
@@ -364,7 +379,7 @@ class Aggregator:
                             if not rec.pipeline_log:
                                 rec.pipeline_log = fpath
 
-                    if fname.endswith("_CNV_CALLS.bed"):
+                    if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
                         parent_name = os.path.basename(root)
                         if not (parent_name.endswith("_cnvkit_output")
                                 or parent_name.endswith("_cnvkit_outputs")):
@@ -373,7 +388,25 @@ class Aggregator:
                                 known_snames=set(self.sample_registry.keys()))
                             if sname not in self._floating_cnv_beds:
                                 self._floating_cnv_beds[sname] = fpath
+                                if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+                                    print(f"  Floating CNV : {sname} -> {fpath}")
+
+        # 3b-ii. Scan AC files/ subdirs for CNV bed files
+        for files_dir in self._files_dirs.values():
+            try:
+                for fname in os.listdir(files_dir):
+                    if fname.startswith("."):
+                        continue
+                    if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
+                        fpath = os.path.join(files_dir, fname)
+                        sname = self._cnv_bed_sample_name(
+                            fname, known_snames=set(self.sample_registry.keys()))
+                        if sname not in self._floating_cnv_beds:
+                            self._floating_cnv_beds[sname] = fpath
+                            if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                                 print(f"  Floating CNV : {sname} -> {fpath}")
+            except OSError:
+                pass
 
         # 3c. Attach floating CNV beds to records that lack one
         for sname, bed_path in self._floating_cnv_beds.items():
@@ -381,14 +414,17 @@ class Aggregator:
             if not rec.cnv_calls_bed:
                 rec.cnv_calls_bed = bed_path
 
-        print(f"  Discovery complete: {len(self.sample_registry)} sample(s) inferred, "
+        n_samples = len(self.sample_registry)
+        print(f"  Discovery complete: {n_samples} sample(s) inferred, "
               f"{len(self.classification_dirs)} classification dir(s), "
               f"{len(self.aux_dirs)} AUX dir(s).")
+        if n_samples > self.VERBOSE_THRESHOLD:
+            print(f"  (Per-item discovery lines suppressed for >{self.VERBOSE_THRESHOLD} samples)")
 
     def _walk_classification_dir(self, cls_dir: str) -> None:
         for root, dirs, files in os.walk(cls_dir, topdown=True):
             dirs[:] = [d for d in dirs
-                       if d not in ("__MACOSX",) and ".DS_Store" not in d]
+                       if not d.startswith(".") and d != "__MACOSX"]
             for dname in list(dirs):
                 dpath = os.path.join(root, dname)
                 if dname == "files":
@@ -409,7 +445,7 @@ class Aggregator:
                         rec.cnvkit_dir = dpath
                         try:
                             for f in os.listdir(dpath):
-                                if f.endswith("_CNV_CALLS.bed"):
+                                if f.endswith("_CNV_CALLS.bed") or f.endswith(LEGACY_CNV_BED_SUFFIX):
                                     rec.cnv_calls_bed = os.path.join(dpath, f)
                                     break
                         except OSError:
@@ -417,7 +453,7 @@ class Aggregator:
                     dirs.remove(dname)
                     continue
             for fname in files:
-                if fname.startswith("._"):
+                if fname.startswith("."):
                     continue
                 fpath = os.path.join(root, fname)
                 for suffix in MISC_AA_SUFFIXES:
@@ -434,12 +470,22 @@ class Aggregator:
                   f"keeping first: {rec.aa_results_dir}")
             return
         rec.aa_results_dir = dpath
-        print(f"  AA results   : {sname} -> {dpath}")
+        if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+            print(f"  AA results   : {sname} -> {dpath}")
         try:
             for fname in os.listdir(dpath):
                 fpath = os.path.join(dpath, fname)
                 if fname.endswith("_summary.txt"):
                     rec.aa_summary_file = fpath
+                    continue
+                if (fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX)) and fname.startswith(sname):
+                    if not rec.cnv_calls_bed:
+                        rec.cnv_calls_bed = fpath
+                    continue
+                if (fname.endswith("_CNV_CALLS_unfiltered_gains.bed")
+                        and fname.startswith(sname)
+                        and not rec.cnv_calls_unfiltered_gains_bed):
+                    rec.cnv_calls_unfiltered_gains_bed = fpath
                     continue
                 for ext, key in ((".pdf", "pdf"), (".png", "png"),
                                  ("_cycles.txt", "cycles"), ("_graph.txt", "graph")):
@@ -454,6 +500,8 @@ class Aggregator:
     def _register_misc_file(self, rec: SampleRecord, suffix: str, fpath: str) -> None:
         if suffix == "_AA_CNV_SEEDS.bed":
             if not rec.aa_cnv_seeds_bed:    rec.aa_cnv_seeds_bed = fpath
+        elif suffix == "_CNV_CALLS_unfiltered_gains.bed":
+            if not rec.cnv_calls_unfiltered_gains_bed: rec.cnv_calls_unfiltered_gains_bed = fpath
         elif suffix == "_finish_flag.txt":
             if not rec.finish_flag:         rec.finish_flag = fpath
         elif suffix == "_run_metadata.json":
@@ -504,37 +552,47 @@ class Aggregator:
         """
         Derive a sample name from a CNV BED filename.
 
-        Handled patterns (in priority order):
-          1. [sname]_CNV_CALLS.bed                    -> sname (no dots in prefix)
-          2. [sname].cs.rmdup_CNV_CALLS.bed           -> sname if prefix matches a known sample
-          3. [sname].[anything]_CNV_CALLS.bed         -> sname (truncate at first dot)
-          4. [any_prefix].cs.rmdup_CNV_CALLS.bed
-             where prefix is not a known sample name  -> parent_dir_name (directory fallback)
-             e.g. /path/SAMPLE/ERR3345421.cs.rmdup_CNV_CALLS.bed -> "SAMPLE"
+        Strategy: strip the bed suffix, then strip the '.cs.rmdup' infix if
+        present — everything before that is treated as the sample name.
+        Sample names may legally contain dots, so we do NOT split on the first dot.
+
+        Handled patterns:
+          [sname]_CNV_CALLS.bed                       -> sname
+          [sname].cs.rmdup_CNV_CALLS.bed              -> sname
+          [sname]_uncorr_CN.bed              (legacy) -> sname
+          [sname].cs.rmdup_uncorr_CN.bed     (legacy) -> sname
+          [instr_id].cs.rmdup_CNV_CALLS.bed
+            where instr_id is not a known sample      -> parent_dir_name (directory fallback)
+            e.g. /path/SAMPLE/ERR3345421.cs.rmdup_CNV_CALLS.bed -> "SAMPLE"
 
         Note: inside a [sname]_cnvkit_output/ dir, sname is already known from
         the directory name so _cnv_bed_sample_name is not used — any file ending
-        in _CNV_CALLS.bed (including .cs.rmdup_CNV_CALLS.bed) is accepted directly.
+        in _CNV_CALLS.bed or LEGACY_CNV_BED_SUFFIX is accepted directly.
         """
-        prefix = rchop(fname, "_CNV_CALLS.bed")
+        # Strip bed suffix
+        if fname.endswith(LEGACY_CNV_BED_SUFFIX):
+            prefix = rchop(fname, LEGACY_CNV_BED_SUFFIX)
+        else:
+            prefix = rchop(fname, "_CNV_CALLS.bed")
 
-        # Case 1: no dots — sample name is unambiguous
-        if "." not in prefix:
-            return prefix
+        # Strip .cs.rmdup infix if present
+        CS_RMDUP = ".cs.rmdup"
+        has_cs_rmdup = prefix.endswith(CS_RMDUP)
+        if has_cs_rmdup:
+            candidate = prefix[:-len(CS_RMDUP)]
+        else:
+            candidate = prefix
 
-        # Cases 2/3: prefix contains dots
-        pre_dot = prefix.split(".")[0]
+        # If candidate matches a known sample, return it
+        if known_snames and candidate in known_snames:
+            return candidate
 
-        # Case 2: check if the pre-dot part matches a known sample name
-        if known_snames and pre_dot in known_snames:
-            return pre_dot
-
-        # Case 4: .cs.rmdup pattern with unrecognised prefix — use parent dir name
-        if fname.endswith(".cs.rmdup_CNV_CALLS.bed") and parent_dir_name:
+        # .cs.rmdup with unrecognised prefix — the prefix is likely an instrument
+        # read ID; use the parent directory name as the sample name instead
+        if has_cs_rmdup and parent_dir_name:
             return parent_dir_name
 
-        # Case 3: fallback — truncate at first dot
-        return pre_dot
+        return candidate
 
     # ==================================================================
     # Stage 4 — result_table parser + sample registry reconciliation
@@ -580,11 +638,11 @@ class Aggregator:
         for search_root in search_dirs:
             for root, dirs, files in os.walk(search_root):
                 dirs[:] = [d for d in dirs
-                           if d not in ("__MACOSX",) and ".DS_Store" not in d]
+                           if not d.startswith(".") and d != "__MACOSX"]
                 for fname in files:
                     if not fname.endswith("_result_table.tsv"):
                         continue
-                    if fname.startswith("._"):
+                    if fname.startswith("."):
                         continue
                     rt_path = os.path.join(root, fname)
                     if rt_path in seen_result_tables:
@@ -675,7 +733,8 @@ class Aggregator:
                 skey = f"sample_{counter}"
                 self.run_json_groups[skey] = rows
                 counter += 1
-            print(f"    {sname}: {len(rows)} feature row(s)")
+            if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+                print(f"    {sname}: {len(rows)} feature row(s)")
 
     # ==================================================================
     # Stage stubs — implemented in subsequent segments
@@ -697,6 +756,7 @@ class Aggregator:
               [sname]_run_metadata.json      (if found)
               [sname]_sample_metadata.json   (if found)
               [sname]_AA_CNV_SEEDS.bed       (if found)
+              [sname]_CNV_CALLS_unfiltered_gains.bed  (if found)
               [sname]_finish_flag.txt        (if found)
               [sname]_timing_log.txt         (if found)
               [sname].log                    (if found)
@@ -719,15 +779,29 @@ class Aggregator:
         print("\n--- Stage 5: Building output tree ---")
 
         # Authoritative sample name list comes from result_table parsing
-        rt_snames = {sname for _, sname, _ in self.all_feature_rows}
+        rt_snames = sorted({sname for _, sname, _ in self.all_feature_rows})
+        n_total = len(rt_snames)
+        verbose = n_total <= self.VERBOSE_THRESHOLD
 
-        for sname in sorted(rt_snames):
+        for i, sname in enumerate(rt_snames, 1):
             self._build_sample_dir(sname)
+            if verbose:
+                print(f"  Built sample dir: {sname}")
+            elif i % 10 == 0 or i == n_total:
+                print(f"  Progress: {i}/{n_total} sample dirs built...")
 
         self._build_consolidated_classification()
         self._copy_aux_dirs()
 
         print("  Output tree construction complete.")
+
+        # Recovery summary
+        n_aa  = sum(1 for s in rt_snames
+                    if (rec := self.sample_registry.get(s)) and rec.aa_dir_dest)
+        n_cnv = sum(1 for s in rt_snames
+                    if (rec := self.sample_registry.get(s)) and rec.cnv_bed_dest)
+        print(f"  AA results identified : {n_aa}/{n_total}")
+        print(f"  CNV calls identified  : {n_cnv}/{n_total}")
 
     # ------------------------------------------------------------------
     # Stage 5a — per-sample directory
@@ -760,7 +834,8 @@ class Aggregator:
         misc_map = [
             (rec.run_metadata_json,    f"{sname}_run_metadata.json"),
             (rec.sample_metadata_json, f"{sname}_sample_metadata.json"),
-            (rec.aa_cnv_seeds_bed,     f"{sname}_AA_CNV_SEEDS.bed"),
+            (rec.aa_cnv_seeds_bed,                   f"{sname}_AA_CNV_SEEDS.bed"),
+            (rec.cnv_calls_unfiltered_gains_bed,     f"{sname}_CNV_CALLS_unfiltered_gains.bed"),
             (rec.finish_flag,          f"{sname}_finish_flag.txt"),
             (rec.timing_log,           f"{sname}_timing_log.txt"),
             (rec.pipeline_log,         f"{sname}.log"),
@@ -769,8 +844,6 @@ class Aggregator:
             if src and os.path.isfile(src):
                 dest = os.path.join(sample_out, dest_name)
                 safe_copy_file(src, dest)
-
-        print(f"  Built sample dir: {sname}")
 
     def _copy_aa_results_dir(self, sname: str, rec: SampleRecord,
                               sample_out: str) -> Optional[str]:
@@ -789,7 +862,7 @@ class Aggregator:
 
         if rec.aa_results_dir and os.path.isdir(rec.aa_results_dir):
             safe_copytree(rec.aa_results_dir, dest_dir,
-                          exclusions=AA_DIR_EXCLUSION_SUFFIXES)
+                          inclusions=AA_DIR_INCLUDE_SUFFIXES)
             return dest_dir
 
         # Synthesise from individual files
@@ -828,6 +901,8 @@ class Aggregator:
                 continue
             try:
                 for fname in os.listdir(files_dir):
+                    if fname.startswith("."):
+                        continue
                     if not (fname.startswith(sname + "_amplicon")
                             or fname == f"{sname}_summary.txt"):
                         continue
@@ -1011,7 +1086,7 @@ class Aggregator:
         for cls_dir in self.classification_dirs:
             try:
                 for fname in os.listdir(cls_dir):
-                    if fname.endswith(suffix) and not fname.startswith("._"):
+                    if fname.endswith(suffix) and not fname.startswith("."):
                         fpath = os.path.join(cls_dir, fname)
                         if os.path.isfile(fpath) and fpath not in seen:
                             found.append(fpath)
@@ -1030,7 +1105,7 @@ class Aggregator:
         for cls_dir in self.classification_dirs:
             try:
                 for dname in os.listdir(cls_dir):
-                    if dname.endswith(suffix) and not dname.startswith("._"):
+                    if dname.endswith(suffix) and not dname.startswith("."):
                         dpath = os.path.join(cls_dir, dname)
                         if os.path.isdir(dpath) and dpath not in seen:
                             found.append(dpath)

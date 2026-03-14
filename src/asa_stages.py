@@ -15,6 +15,8 @@ Stages:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import time
 import os
@@ -22,6 +24,7 @@ import shutil
 import sys
 import tarfile
 import zipfile
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -120,6 +123,7 @@ class Aggregator:
             self._stage3_discover()
             self._stage4_parse_result_tables()
             self._stage5_build_output_tree()
+            self._apply_deep_rename()
             self._stage6_build_run_json()
             self._finalise()
             self.completed = True
@@ -1176,6 +1180,165 @@ class Aggregator:
 
 
     # ==================================================================
+    # Deep rename — applied after Stage 5, before Stage 6
+    # ==================================================================
+
+    def _apply_deep_rename(self) -> None:
+        """
+        When a name_map is provided, physically rename every file and directory
+        that carries the old sample name, then patch the relevant TSV column
+        values in consolidated_classification/.
+
+        Must run after Stage 5 (output tree built) and before Stage 6 (path
+        resolution), so that _resolve_paths sees files under the new names.
+        """
+        if not self.name_map:
+            return
+
+        print("\n--- Deep rename ---")
+        for old_sname, new_sname in self.name_map.items():
+            if old_sname == new_sname:
+                continue
+            self._rename_sample_dir(old_sname, new_sname)
+            self._rename_in_classif_subdirs(old_sname, new_sname)
+
+        self._patch_classif_tsvs()
+
+    def _rename_sample_dir(self, old_sname: str, new_sname: str) -> None:
+        """
+        Rename results/samples/[old]/ → results/samples/[new]/ and every
+        file/dir inside whose name starts with old_sname.  Also renames files
+        inside the AA results subdirectory.  Updates the SampleRecord paths.
+        """
+        old_dir = os.path.join(self.samples_dir, old_sname)
+        new_dir = os.path.join(self.samples_dir, new_sname)
+        if not os.path.isdir(old_dir):
+            print(f"  Warning: sample dir not found for '{old_sname}', skipping rename.")
+            return
+
+        os.rename(old_dir, new_dir)
+        print(f"  Renamed sample dir: {old_sname} -> {new_sname}")
+
+        # Rename entries directly inside the sample dir
+        for entry in os.listdir(new_dir):
+            if not entry.startswith(old_sname):
+                continue
+            new_entry = new_sname + entry[len(old_sname):]
+            os.rename(os.path.join(new_dir, entry),
+                      os.path.join(new_dir, new_entry))
+            # If this is the AA results dir, rename files inside it too
+            if new_entry == f"{new_sname}_AA_results":
+                aa_dir = os.path.join(new_dir, new_entry)
+                if os.path.isdir(aa_dir):
+                    for aa_file in os.listdir(aa_dir):
+                        if aa_file.startswith(old_sname):
+                            os.rename(os.path.join(aa_dir, aa_file),
+                                      os.path.join(aa_dir,
+                                                   new_sname + aa_file[len(old_sname):]))
+
+        # Update SampleRecord destination paths
+        rec = self.sample_registry.get(old_sname)
+        if rec:
+            if rec.aa_dir_dest:
+                rec.aa_dir_dest = os.path.join(new_dir, f"{new_sname}_AA_results")
+            if rec.cnv_bed_dest:
+                rec.cnv_bed_dest = os.path.join(new_dir, f"{new_sname}_CNV_CALLS.bed")
+            if rec.cnvkit_tarball:
+                rec.cnvkit_tarball = os.path.join(
+                    new_dir, f"{new_sname}_cnvkit_output.tar.gz")
+
+    def _rename_in_classif_subdirs(self, old_sname: str, new_sname: str) -> None:
+        """
+        Rename per-sample files (e.g. [old]_amplicon1_annotated_cycles.txt)
+        inside the three flat classification subdirectories.
+        """
+        classif_subdirs = [
+            f"{self.project_name}_annotated_cycles_files",
+            f"{self.project_name}_classification_bed_files",
+            f"{self.project_name}_SV_summaries",
+        ]
+        for subdir_name in classif_subdirs:
+            subdir = os.path.join(self.classif_dir, subdir_name)
+            if not os.path.isdir(subdir):
+                continue
+            for fname in os.listdir(subdir):
+                if fname.startswith(old_sname):
+                    os.rename(os.path.join(subdir, fname),
+                              os.path.join(subdir, new_sname + fname[len(old_sname):]))
+
+    def _patch_classif_tsvs(self) -> None:
+        """
+        Apply all name_map renames to the relevant columns in every merged
+        TSV file in consolidated_classification/.
+
+        Column specs  (column_name, is_prefix — True means value starts with
+        [sname]_amplicon so only the sample-name prefix is replaced):
+        """
+        # (filename_suffix,  column_name,   is_prefix)
+        TSV_SPECS = [
+            ("_amplicon_classification_profiles.tsv", "sample_name",  False),
+            ("_ecDNA_counts.tsv",                     "#sample",       False),
+            ("_feature_basic_properties.tsv",         "feature_ID",    True),
+            ("_feature_entropy.tsv",                  "sample",        False),
+            ("_gene_list.tsv",                        "sample_name",   False),
+            ("_result_table.tsv",                     "Sample name",   False),
+            ("_result_table.tsv",                     "Feature ID",    True),
+        ]
+        # Group specs by file so each file is read/written only once
+        file_specs: Dict[str, list] = defaultdict(list)
+        for suffix, col, is_prefix in TSV_SPECS:
+            fname = f"{self.project_name}{suffix}"
+            file_specs[fname].append((col, is_prefix))
+
+        for fname, specs in file_specs.items():
+            fpath = os.path.join(self.classif_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, "r", newline="") as fh:
+                    lines = fh.readlines()
+            except OSError as e:
+                print(f"  Warning: could not read {fname} for renaming: {e}")
+                continue
+
+            if not lines:
+                continue
+
+            reader = csv.DictReader(io.StringIO("".join(lines)), delimiter="\t")
+            fieldnames = reader.fieldnames
+            if not fieldnames:
+                continue
+            rows = list(reader)
+
+            for row in rows:
+                for col, is_prefix in specs:
+                    if col not in row:
+                        continue
+                    val = row[col]
+                    for old_sname, new_sname in self.name_map.items():
+                        if old_sname == new_sname:
+                            continue
+                        if is_prefix:
+                            prefix = old_sname + "_amplicon"
+                            if val.startswith(prefix):
+                                row[col] = new_sname + val[len(old_sname):]
+                                break
+                        else:
+                            if val == old_sname:
+                                row[col] = new_sname
+                                break
+
+            try:
+                with open(fpath, "w", newline="") as fh:
+                    writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                           delimiter="\t", extrasaction="ignore")
+                    writer.writeheader()
+                    writer.writerows(rows)
+                print(f"  Patched {fname}")
+            except OSError as e:
+                print(f"  Warning: could not write {fname} after renaming: {e}")
+
+    # ==================================================================
     # Stage 6 — run.json constructor
     # ==================================================================
 
@@ -1264,7 +1427,6 @@ class Aggregator:
         # List fields rendered as Python repr strings e.g. ['EGFR', 'MYC'].
         # Columns are AGG_CSV_COLUMNS subset in spec order (no AA/cnvkit dir).
         # Rows sorted by: Sample name, AA amplicon number, Feature ID.
-        import csv as _csv
         all_flat_rows = [row for rows in self.run_json_groups.values() for row in rows]
         all_flat_rows.sort(key=lambda r: (
             str(r.get("Sample name", "")),
@@ -1273,7 +1435,7 @@ class Aggregator:
         ))
         csv_path = os.path.join(self.results_dir, "aggregated_results.csv")
         with open(csv_path, "w", newline="") as fh:
-            writer = _csv.writer(fh)
+            writer = csv.writer(fh)
             writer.writerow(AGG_CSV_COLUMNS)
             for row in all_flat_rows:
                 cells = []
@@ -1293,8 +1455,13 @@ class Aggregator:
         Re-resolve all stale file path fields in a feature row dict.
         Modifies row in-place.  All resolved paths are expressed relative
         to self.results_dir.
+
+        Uses the post-rename name (effective_sname) when constructing
+        filenames, so that deep-renamed samples resolve correctly.
         """
         sname = row.get("Sample name", "")
+        # After deep rename, files on disk carry the new name
+        effective_sname = self.name_map.get(sname, sname)
         amp_num_raw = row.get("AA amplicon number")
         try:
             amp_num = int(amp_num_raw)
@@ -1303,8 +1470,11 @@ class Aggregator:
 
         # ── Feature BED file ─────────────────────────────────────────────
         # Resolve from consolidated_classification bed files dir.
+        # If the stored basename still uses the old name, translate it.
         feat_bed_basename = os.path.basename(
             str(row.get("Feature BED file", "")))
+        if effective_sname != sname and feat_bed_basename.startswith(sname):
+            feat_bed_basename = effective_sname + feat_bed_basename[len(sname):]
         bed_files_dir = os.path.join(
             self.classif_dir,
             f"{self.project_name}_classification_bed_files")
@@ -1321,27 +1491,27 @@ class Aggregator:
 
         # ── AA PNG file ──────────────────────────────────────────────────
         row["AA PNG file"] = self._resolve_amplicon_file(
-            rec, amp_num, "png", sname)
+            rec, amp_num, "png", effective_sname)
 
         # ── AA PDF file ──────────────────────────────────────────────────
         row["AA PDF file"] = self._resolve_amplicon_file(
-            rec, amp_num, "pdf", sname)
+            rec, amp_num, "pdf", effective_sname)
 
         # ── AA cycles file ────────────────────────────────────────────────
         row["AA cycles file"] = self._resolve_amplicon_file(
-            rec, amp_num, "cycles", sname)
+            rec, amp_num, "cycles", effective_sname)
 
         # ── AA graph file ─────────────────────────────────────────────────
         row["AA graph file"] = self._resolve_amplicon_file(
-            rec, amp_num, "graph", sname)
+            rec, amp_num, "graph", effective_sname)
 
         # ── Run metadata JSON ────────────────────────────────────────────
         row["Run metadata JSON"] = self._resolve_misc_path(
-            rec, "run_metadata_json", sname, "_run_metadata.json")
+            rec, "run_metadata_json", effective_sname, "_run_metadata.json")
 
         # ── Sample metadata JSON ─────────────────────────────────────────
         row["Sample metadata JSON"] = self._resolve_misc_path(
-            rec, "sample_metadata_json", sname, "_sample_metadata.json")
+            rec, "sample_metadata_json", effective_sname, "_sample_metadata.json")
 
         # ── AA directory ─────────────────────────────────────────────────
         if rec and rec.aa_dir_dest and os.path.isdir(rec.aa_dir_dest):

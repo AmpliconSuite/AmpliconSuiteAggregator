@@ -32,7 +32,8 @@ import pandas as pd
 from asa_aggregator import (
     # constants
     ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, AA_DIR_INCLUDE_SUFFIXES, MISC_AA_SUFFIXES,
-    LEGACY_CNV_BED_SUFFIX,
+    LEGACY_CNV_BED_SUFFIX, AMPLICON_FILE_EXT_MAP, CORAL_HEADER_PREFIX,
+    AMPLICON_FILE_DISCOVERY_SUFFIXES,
     AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
     NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
@@ -41,7 +42,9 @@ from asa_aggregator import (
     # utilities
     rchop, not_provided, parse_list_field, read_name_map,
     is_valid_aa_results_dir, is_classification_dir,
+    is_aa_summary_content, is_coral_summary_content,
     make_tarball, safe_copy_file, safe_copytree, relative_to_results,
+    convert_cnvkit_cns_to_bed, extract_tool_versions,
 )
 
 from asa_aggregator import __version__
@@ -328,22 +331,19 @@ class Aggregator:
                     dirs.remove(dname)
                     continue
 
-                if dname.endswith("_cnvkit_output") or dname.endswith("_cnvkit_outputs"):
-                    suffix = ("_cnvkit_outputs" if dname.endswith("_cnvkit_outputs")
-                              else "_cnvkit_output")
-                    sname = rchop(dname, suffix)
-                    rec = self._get_or_create_record(sname)
-                    if rec.cnvkit_dir:
-                        print(f"  Warning: duplicate cnvkit dir for '{sname}', "
-                              f"keeping first: {rec.cnvkit_dir}")
+                if (dname.endswith("_cnvkit_output") or dname.endswith("_cnvkit_outputs")
+                        or dname in ("cnvkit_output", "cnvkit_outputs")):
+                    if dname in ("cnvkit_output", "cnvkit_outputs"):
+                        # CoRAL-style bare dirname (no sample prefix) — there's no
+                        # AmpliconSuite-pipeline wrapper to prefix it, so the sample
+                        # name comes from the enclosing dir instead, e.g.
+                        # CoRAL_runs/[sname]/cnvkit_output/
+                        sname = os.path.basename(root)
                     else:
-                        rec.cnvkit_dir = dpath
-                        if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
-                            print(f"  cnvkit dir   : {sname} -> {dpath}")
-                        for fname in dcontents:
-                            if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
-                                rec.cnv_calls_bed = os.path.join(dpath, fname)
-                                break
+                        suffix = ("_cnvkit_outputs" if dname.endswith("_cnvkit_outputs")
+                                  else "_cnvkit_output")
+                        sname = rchop(dname, suffix)
+                    self._register_cnvkit_dir(sname, dpath)
                     dirs.remove(dname)
                     continue
 
@@ -376,12 +376,21 @@ class Aggregator:
 
                 if not matched:
                     if fname.endswith(".log") and root != self.extract_dir:
-                        sname = fname[:-4]
+                        # AmpliconSuite-pipeline writes a short [name].log
+                        # sibling and, on newer versions, a fuller
+                        # [name].run.log with the same content plus the
+                        # AA/CNVkit subprocess output (and, with it, the
+                        # AmpliconArchitect version line the short log lacks).
+                        if fname.endswith(".run.log"):
+                            sname = fname[:-len(".run.log")]
+                        else:
+                            sname = fname[:-4]
                         sibling_aa = os.path.join(root, f"{sname}_AA_results")
                         if os.path.isdir(sibling_aa):
                             rec = self._get_or_create_record(sname)
                             if not rec.pipeline_log:
                                 rec.pipeline_log = fpath
+                            self._extract_log_versions(rec, fpath)
 
                     if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
                         parent_name = os.path.basename(root)
@@ -395,20 +404,28 @@ class Aggregator:
                                 if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                                     print(f"  Floating CNV : {sname} -> {fpath}")
 
-        # 3b-ii. Scan AC files/ subdirs for CNV bed files
+        # 3b-ii. Scan AC files/ subdirs for CNV bed files, summary files, and
+        # per-amplicon files. This is what makes classification-time copies
+        # of graph/cycles/plot files (AC's files/ directory) populate the
+        # structured amplicon_files dict, rather than only being reachable
+        # via Stage 5's blind-copy fallback (_pull_aa_files_from_files_dirs).
         for files_dir in self._files_dirs.values():
             try:
                 for fname in os.listdir(files_dir):
                     if fname.startswith("."):
                         continue
+                    fpath = os.path.join(files_dir, fname)
                     if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
-                        fpath = os.path.join(files_dir, fname)
                         sname = self._cnv_bed_sample_name(
                             fname, known_snames=set(self.sample_registry.keys()))
                         if sname not in self._floating_cnv_beds:
                             self._floating_cnv_beds[sname] = fpath
                             if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                                 print(f"  Floating CNV : {sname} -> {fpath}")
+                        continue
+                    if self._register_summary_file(fname, fpath):
+                        continue
+                    self._register_amplicon_file(fname, fpath)
             except OSError:
                 pass
 
@@ -439,33 +456,48 @@ class Aggregator:
                     self._register_aa_results_dir(sname, dpath)
                     dirs.remove(dname)
                     continue
-                if (dname.endswith("_cnvkit_output")
-                        or dname.endswith("_cnvkit_outputs")):
-                    suffix = ("_cnvkit_outputs" if dname.endswith("_cnvkit_outputs")
-                              else "_cnvkit_output")
-                    sname = rchop(dname, suffix)
-                    rec = self._get_or_create_record(sname)
-                    if not rec.cnvkit_dir:
-                        rec.cnvkit_dir = dpath
-                        try:
-                            for f in os.listdir(dpath):
-                                if f.endswith("_CNV_CALLS.bed") or f.endswith(LEGACY_CNV_BED_SUFFIX):
-                                    rec.cnv_calls_bed = os.path.join(dpath, f)
-                                    break
-                        except OSError:
-                            pass
+                if (dname.endswith("_cnvkit_output") or dname.endswith("_cnvkit_outputs")
+                        or dname in ("cnvkit_output", "cnvkit_outputs")):
+                    if dname in ("cnvkit_output", "cnvkit_outputs"):
+                        sname = os.path.basename(root)
+                    else:
+                        suffix = ("_cnvkit_outputs" if dname.endswith("_cnvkit_outputs")
+                                  else "_cnvkit_output")
+                        sname = rchop(dname, suffix)
+                    self._register_cnvkit_dir(sname, dpath)
                     dirs.remove(dname)
                     continue
             for fname in files:
                 if fname.startswith("."):
                     continue
                 fpath = os.path.join(root, fname)
+
+                matched = False
                 for suffix in MISC_AA_SUFFIXES:
                     if fname.endswith(suffix):
                         sname = rchop(fname, suffix)
                         rec = self._get_or_create_record(sname)
                         self._register_misc_file(rec, suffix, fpath)
+                        matched = True
                         break
+                if matched:
+                    continue
+
+                # Summary file (flat classification dir — all sample files at top level)
+                if self._register_summary_file(fname, fpath):
+                    continue
+
+                # Per-amplicon files sitting flat alongside classification TSVs
+                if self._register_amplicon_file(fname, fpath):
+                    continue
+
+                # CNV BED files (no parent-dir fallback — we're inside a classification dir)
+                if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
+                    sname = self._cnv_bed_sample_name(
+                        fname, parent_dir_name="",
+                        known_snames=set(self.sample_registry.keys()))
+                    if sname not in self._floating_cnv_beds:
+                        self._floating_cnv_beds[sname] = fpath
 
     def _register_aa_results_dir(self, sname: str, dpath: str) -> None:
         rec = self._get_or_create_record(sname)
@@ -479,8 +511,25 @@ class Aggregator:
         try:
             for fname in os.listdir(dpath):
                 fpath = os.path.join(dpath, fname)
-                if fname.endswith("_summary.txt"):
-                    rec.aa_summary_file = fpath
+                if os.path.isdir(fpath):
+                    # CoRAL has no AmpliconSuite-pipeline wrapper, so its
+                    # cnvkit_output dir sometimes sits *inside* the results
+                    # dir (which is itself claimed wholesale here off loose
+                    # summary/graph/cycles files) rather than beside it —
+                    # AA's canonical _AA_results/ never nests one.
+                    if (fname in ("cnvkit_output", "cnvkit_outputs")
+                            or fname.endswith("_cnvkit_output")
+                            or fname.endswith("_cnvkit_outputs")):
+                        self._register_cnvkit_dir(sname, fpath)
+                    continue
+                if fname == f"{sname}.log":
+                    # The AA tool's own log (inside the results dir, as
+                    # opposed to AmpliconSuite-pipeline's sibling [name].log
+                    # outside it) reliably opens with an "AmpliconArchitect
+                    # version ..." banner line, even when no pipeline-level
+                    # sibling log exists at all.
+                    self._extract_log_versions(rec, fpath)
+                if self._register_summary_file(fname, fpath, sname=sname):
                     continue
                 if (fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX)) and fname.startswith(sname):
                     if not rec.cnv_calls_bed:
@@ -491,18 +540,176 @@ class Aggregator:
                         and not rec.cnv_calls_unfiltered_gains_bed):
                     rec.cnv_calls_unfiltered_gains_bed = fpath
                     continue
-                for ext, key in ((".pdf", "pdf"), (".png", "png"),
-                                 ("_cycles.txt", "cycles"), ("_graph.txt", "graph")):
-                    if fname.endswith(ext) and "_amplicon" in fname:
-                        num = self._parse_amplicon_num(fname, sname)
-                        if num is not None:
-                            rec.amplicon_files.setdefault(num, {})[key] = fpath
-                        break
+                self._register_amplicon_file(fname, fpath, sname=sname)
         except OSError as e:
             print(f"  Warning: could not index files in {dpath}: {e}")
 
+    def _extract_log_versions(self, rec: SampleRecord, fpath: str) -> None:
+        """
+        Scrape AmpliconArchitect / AmpliconSuite-pipeline version banner
+        lines out of a log file, filling in whichever of rec.aa_version /
+        rec.amplicon_suite_pipeline_version is still unset. First log found
+        with a given version line wins; called from multiple discovery
+        sites (nested AA-tool log, sibling pipeline log) since neither
+        source is guaranteed to carry both lines.
+        """
+        if rec.aa_version and rec.amplicon_suite_pipeline_version:
+            return
+        try:
+            with open(fpath, errors="ignore") as fh:
+                text = fh.read()
+        except OSError:
+            return
+        aa_v, pipeline_v = extract_tool_versions(text)
+        if aa_v and not rec.aa_version:
+            rec.aa_version = aa_v
+        if pipeline_v and not rec.amplicon_suite_pipeline_version:
+            rec.amplicon_suite_pipeline_version = pipeline_v
+
+    def _register_cnvkit_dir(self, sname: str, dpath: str) -> None:
+        rec = self._get_or_create_record(sname)
+        if rec.cnvkit_dir:
+            print(f"  Warning: duplicate cnvkit dir for '{sname}', "
+                  f"keeping first: {rec.cnvkit_dir}")
+            return
+        rec.cnvkit_dir = dpath
+        if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
+            print(f"  cnvkit dir   : {sname} -> {dpath}")
+        try:
+            entries = os.listdir(dpath)
+        except OSError:
+            entries = []
+        for fname in entries:
+            if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
+                rec.cnv_calls_bed = os.path.join(dpath, fname)
+                break
+        if not rec.cnv_calls_bed:
+            # CoRAL has no AmpliconSuite-pipeline wrapper, so nothing runs
+            # cnvkit's raw .cns segments through the CNV_CALLS.bed
+            # conversion step AA's pipeline does — recover it from the
+            # plain (non-.call, non-.bintest) .cns file if present.
+            plain_cns = next(
+                (f for f in entries if f.endswith(".cns")
+                 and not f.endswith(".call.cns") and not f.endswith(".bintest.cns")),
+                None)
+            if plain_cns:
+                dest = os.path.join(dpath, f"{sname}_CNV_CALLS.bed")
+                try:
+                    convert_cnvkit_cns_to_bed(os.path.join(dpath, plain_cns), dest)
+                    rec.cnv_calls_bed = dest
+                    print(f"  Generated CNV_CALLS.bed for '{sname}' from {plain_cns} "
+                          f"(no CNV_CALLS.bed found in cnvkit dir)")
+                except (OSError, ValueError, IndexError) as e:
+                    print(f"  Warning: failed to convert {plain_cns} to "
+                          f"CNV_CALLS.bed for '{sname}': {e}")
+
+    def _register_amplicon_file(self, fname: str, fpath: str,
+                                 sname: Optional[str] = None) -> bool:
+        """
+        Register a per-amplicon file (pdf/png/cycles/graph/cycles_png/
+        cycles_pdf) on the owning SampleRecord and run tool-detection
+        content sniffing on .txt files. Shared by canonical-dir indexing
+        (sname known), flat-file discovery, and the files/-dir scan (sname
+        parsed from the filename in both of the latter cases).
+
+        Returns True if fname matched the "_amplicon"-file pattern at all
+        (whether or not registration actually succeeded), so callers can
+        treat this as "recognised, stop trying other matchers" — mirrors
+        the original inline logic's unconditional `continue`.
+        """
+        if "_amplicon" not in fname:
+            return False
+        for suffix, key in AMPLICON_FILE_DISCOVERY_SUFFIXES:
+            if not fname.endswith(suffix):
+                continue
+            candidate = sname
+            if candidate is None:
+                amp_idx = fname.find("_amplicon")
+                if amp_idx <= 0:
+                    break
+                candidate = fname[:amp_idx]
+            num = self._parse_amplicon_num(fname, candidate)
+            # Require an exact shape ({sname}_amplicon{N}{suffix}) — not
+            # just "contains _amplicon and ends with a recognised suffix".
+            # Other per-amplicon-numbered artifacts (e.g. BFBArchitect's
+            # {sname}_amplicon{N}_whole_graph_BFB_cycles.txt) also end in a
+            # recognised suffix but carry extra text in between; without
+            # this check they'd collide with the real per-amplicon file
+            # under the same dict key.
+            if num is not None and fname == f"{candidate}_amplicon{num}{suffix}":
+                rec = self._get_or_create_record(candidate)
+                rec.amplicon_files.setdefault(num, {}).setdefault(key, fpath)
+                if key in ("cycles", "graph"):
+                    self._detect_tool_from_amplicon_txt(rec, fpath, key)
+            break
+        return True
+
+    def _register_summary_file(self, fname: str, fpath: str,
+                                sname: Optional[str] = None) -> bool:
+        """
+        Register a summary file (AA's `_summary.txt` or CoRAL's older
+        `_amplicon_summary.txt`) on the owning SampleRecord, validating
+        content and running tool-detection sniffing. Shared by
+        canonical-dir indexing (sname known) and flat-file discovery
+        (sname parsed from the filename).
+
+        Returns True if fname matched a summary-file suffix at all
+        (whether or not its content validated), so callers can stop
+        trying other matchers for this file.
+        """
+        if fname.endswith("_amplicon_summary.txt"):
+            suffix = "_amplicon_summary.txt"
+        elif fname.endswith("_summary.txt"):
+            suffix = "_summary.txt"
+        else:
+            return False
+
+        candidate = sname if sname is not None else rchop(fname, suffix)
+        try:
+            with open(fpath) as fh:
+                lines = [fh.readline() for _ in range(5)]
+        except OSError:
+            return True
+
+        is_coral = is_coral_summary_content(lines)
+        if not (is_aa_summary_content(lines[0]) or is_coral):
+            return True
+
+        rec = self._get_or_create_record(candidate)
+        if not rec.aa_summary_file:
+            rec.aa_summary_file = fpath
+        if is_coral:
+            rec.reconstruction_tool = "CoRAL"
+        return True
+
+    def _detect_tool_from_amplicon_txt(self, rec: SampleRecord, fpath: str,
+                                        key: str) -> None:
+        """
+        Peek a per-amplicon graph.txt/cycles.txt for CoRAL content signals:
+        the future `#CoRAL` header line, or (cycles.txt only) a `Path=`
+        walk line / "subpath constraints" section — both CoRAL-only per
+        AC's own AA/CoRAL parsing distinction. No-ops once a sample is
+        already tagged CoRAL.
+        """
+        if rec.reconstruction_tool == "CoRAL":
+            return
+        try:
+            with open(fpath) as fh:
+                first_line = fh.readline()
+                if first_line.startswith(CORAL_HEADER_PREFIX):
+                    rec.reconstruction_tool = "CoRAL"
+                    return
+                if key != "cycles":
+                    return
+                for line in (first_line, *fh):
+                    if line.startswith("Path=") or "subpath constraints" in line:
+                        rec.reconstruction_tool = "CoRAL"
+                        return
+        except OSError:
+            pass
+
     def _register_misc_file(self, rec: SampleRecord, suffix: str, fpath: str) -> None:
-        if suffix == "_AA_CNV_SEEDS.bed":
+        if suffix in ("_AA_CNV_SEEDS.bed", "_CNV_SEEDS.bed"):
             if not rec.aa_cnv_seeds_bed:    rec.aa_cnv_seeds_bed = fpath
         elif suffix == "_CNV_CALLS_unfiltered_gains.bed":
             if not rec.cnv_calls_unfiltered_gains_bed: rec.cnv_calls_unfiltered_gains_bed = fpath
@@ -524,6 +731,11 @@ class Aggregator:
     def _sname_from_summary(dirpath: str) -> Optional[str]:
         try:
             for fname in os.listdir(dirpath):
+                # Check the longer CoRAL suffix first — it ends in the same
+                # "_summary.txt" tail, so checking that one first would chop
+                # "_amplicon" off the sample name too.
+                if fname.endswith("_amplicon_summary.txt"):
+                    return rchop(fname, "_amplicon_summary.txt")
                 if fname.endswith("_summary.txt"):
                     return rchop(fname, "_summary.txt")
         except OSError:
@@ -754,7 +966,7 @@ class Aggregator:
         Build the physical results/ tree:
 
           results/samples/[sname]/
-              [sname]_AA_results/            (uncompressed dir)
+              [sname]_reconstruction_results/  (uncompressed dir; AA or CoRAL)
               [sname]_cnvkit_output.tar.gz
               [sname]_CNV_CALLS.bed          (uncompressed copy)
               [sname]_run_metadata.json      (if found)
@@ -804,7 +1016,7 @@ class Aggregator:
                     if (rec := self.sample_registry.get(s)) and rec.aa_dir_dest)
         n_cnv = sum(1 for s in rt_snames
                     if (rec := self.sample_registry.get(s)) and rec.cnv_bed_dest)
-        print(f"  AA results identified : {n_aa}/{n_total}")
+        print(f"  Reconstruction results identified : {n_aa}/{n_total}")
         print(f"  CNV calls identified  : {n_cnv}/{n_total}")
 
     # ------------------------------------------------------------------
@@ -852,21 +1064,29 @@ class Aggregator:
     def _copy_aa_results_dir(self, sname: str, rec: SampleRecord,
                               sample_out: str) -> Optional[str]:
         """
-        Copy AA results into sample_out/[sname]_AA_results/ (uncompressed).
+        Copy reconstruction results into
+        sample_out/[sname]_reconstruction_results/ (uncompressed).
 
         Priority:
           1. Use rec.aa_results_dir (canonical dir) — copy tree directly.
-          2. Synthesise a [sname]_AA_results/ dir from individual files:
-             a. amplicon_files (pdf, png, cycles, graph) from rec
+          2. Synthesise a [sname]_reconstruction_results/ dir from individual
+             files, renaming each to the canonical
+             [sname]_amplicon{N}{ext}/[sname]_summary.txt convention rather
+             than preserving source basenames — source tools (e.g. CoRAL)
+             may not follow AA's bare-filename convention, and Stage 6's
+             resolver assumes the canonical form:
+             a. amplicon_files (pdf, png, cycles, graph, cycles_png,
+                cycles_pdf) from rec
              b. aa_summary_file from rec
              c. Fall back to files/ subdir of any classification dir for this sample
           3. If nothing found, return None.
         """
-        dest_dir = os.path.join(sample_out, f"{sname}_AA_results")
+        dest_dir = os.path.join(sample_out, f"{sname}_reconstruction_results")
 
         if rec.aa_results_dir and os.path.isdir(rec.aa_results_dir):
             safe_copytree(rec.aa_results_dir, dest_dir,
                           inclusions=AA_DIR_INCLUDE_SUFFIXES)
+            self._canonicalize_reconstruction_files(dest_dir, sname)
             return dest_dir
 
         # Synthesise from individual files
@@ -876,11 +1096,16 @@ class Aggregator:
         for amp_num, file_dict in rec.amplicon_files.items():
             for key, src in file_dict.items():
                 if src and os.path.isfile(src):
-                    shutil.copy2(src, dest_dir)
+                    ext = AMPLICON_FILE_EXT_MAP.get(key)
+                    if not ext:
+                        continue
+                    dest = os.path.join(dest_dir, f"{sname}_amplicon{amp_num}{ext}")
+                    shutil.copy2(src, dest)
                     found_any = True
 
         if rec.aa_summary_file and os.path.isfile(rec.aa_summary_file):
-            shutil.copy2(rec.aa_summary_file, dest_dir)
+            shutil.copy2(rec.aa_summary_file,
+                        os.path.join(dest_dir, f"{sname}_summary.txt"))
             found_any = True
 
         if not found_any:
@@ -890,8 +1115,48 @@ class Aggregator:
             return dest_dir
 
         shutil.rmtree(dest_dir, ignore_errors=True)
-        print(f"  Warning: no AA results found for '{sname}' — AA directory: Not Provided")
+        print(f"  Warning: no reconstruction results found for '{sname}' — Reconstruction directory: Not Provided")
         return None
+
+    def _canonicalize_reconstruction_files(self, dest_dir: str, sname: str) -> None:
+        """
+        Rename per-amplicon plot/cycles/graph files and the summary file,
+        in place, to the canonical [sname]_amplicon{N}{ext} /
+        [sname]_summary.txt shape Stage 6's resolver expects. Only needed
+        after the canonical-dir copytree (path 1 above) — the
+        synthesise-from-files path (path 2) already writes canonical names
+        directly. Source tools (e.g. CoRAL) may use non-canonical
+        basenames — the infixed "_graph.png"/"_cycles.png" spellings, or
+        the older "_amplicon_summary.txt" — which copytree preserves
+        as-is; without this pass those files resolve to Not Provided in
+        run.json even though they were copied successfully.
+        """
+        try:
+            entries = os.listdir(dest_dir)
+        except OSError:
+            return
+        for fname in entries:
+            fpath = os.path.join(dest_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            if fname.endswith("_amplicon_summary.txt") or fname.endswith("_summary.txt"):
+                canonical = f"{sname}_summary.txt"
+                if fname != canonical and not os.path.exists(os.path.join(dest_dir, canonical)):
+                    os.rename(fpath, os.path.join(dest_dir, canonical))
+                continue
+            if "_amplicon" not in fname:
+                continue
+            for suffix, key in AMPLICON_FILE_DISCOVERY_SUFFIXES:
+                if not fname.endswith(suffix):
+                    continue
+                num = self._parse_amplicon_num(fname, sname)
+                ext = AMPLICON_FILE_EXT_MAP.get(key)
+                if num is None or not ext or fname != f"{sname}_amplicon{num}{suffix}":
+                    break
+                canonical = f"{sname}_amplicon{num}{ext}"
+                if fname != canonical and not os.path.exists(os.path.join(dest_dir, canonical)):
+                    os.rename(fpath, os.path.join(dest_dir, canonical))
+                break
 
     def _pull_aa_files_from_files_dirs(self, sname: str, staging: str) -> bool:
         """
@@ -985,7 +1250,8 @@ class Aggregator:
             suffix   = target["suffix"]
             has_hdr  = target["has_header"]
             is_dir   = target["is_dir"]
-            out_name = f"{self.project_name}{suffix}"
+            out_name = (f"{self.project_name}{suffix}"
+                        if target.get("prefix_output", True) else suffix)
 
             if is_dir:
                 out_path = os.path.join(self.classif_dir, out_name)
@@ -1002,8 +1268,13 @@ class Aggregator:
         Concatenate all TSV files with the given suffix found across all
         classification dirs into out_path.
 
-        - has_header=True:  keep first file's header; drop subsequent headers;
-                            warn if headers differ across files.
+        - has_header=True:  union-merge by column name (see
+                            _merge_ac_tsvs_with_header) so files with
+                            differing schemas — different AC versions, or
+                            different --verbose_classification /
+                            --bfbarchitect flag combinations within the same
+                            AC version — merge safely instead of silently
+                            corrupting under a mismatched header.
         - has_header=False: straight concatenation, no header logic.
         - has_header=None:  file is optional; skip silently if none found.
         """
@@ -1017,9 +1288,11 @@ class Aggregator:
                           f"output file will not be created.")
             return
 
-        written_header: Optional[str] = None
-        lines_written = 0
+        if has_header:
+            self._merge_ac_tsvs_with_header(sources, out_path, suffix)
+            return
 
+        lines_written = 0
         with open(out_path, "w") as out_fh:
             for src_path in sources:
                 try:
@@ -1028,31 +1301,46 @@ class Aggregator:
                 except OSError as e:
                     print(f"  Warning: could not read {src_path}: {e}")
                     continue
-
-                if not raw_lines:
-                    continue
-
-                if has_header:
-                    file_header = raw_lines[0]
-                    data_lines  = raw_lines[1:]
-                    if written_header is None:
-                        written_header = file_header
-                        out_fh.write(file_header)
-                    elif file_header.strip() != written_header.strip():
-                        print(f"  Warning: header mismatch in '{src_path}' "
-                              f"for suffix '{suffix}' — using first header, "
-                              f"skipping this file's header line.")
-                    for line in data_lines:
-                        out_fh.write(line)
-                        lines_written += 1
-                else:
-                    # No header — straight concat
-                    for line in raw_lines:
-                        out_fh.write(line)
-                        lines_written += 1
+                for line in raw_lines:
+                    out_fh.write(line)
+                    lines_written += 1
 
         print(f"  Merged {len(sources)} file(s) -> {os.path.basename(out_path)} "
               f"({lines_written} data line(s))")
+
+    def _merge_ac_tsvs_with_header(self, sources: List[str], out_path: str,
+                                    suffix: str) -> None:
+        """
+        Union-merge headered TSVs by column name using pandas.  Files whose
+        columns don't exactly match get their missing columns filled with an
+        empty string rather than having their data rows appended under a
+        header they don't match (which is what naive line-based concatenation
+        would silently do).  Column order follows first-seen order, with any
+        columns unique to later files appended at the end.
+        """
+        dfs = []
+        seen_columns: Optional[frozenset] = None
+        for src_path in sources:
+            try:
+                df = pd.read_csv(src_path, sep="\t", dtype=str, keep_default_na=False)
+            except Exception as e:
+                print(f"  Warning: could not read {src_path}: {e}")
+                continue
+            cols = frozenset(df.columns)
+            if seen_columns is None:
+                seen_columns = cols
+            elif cols != seen_columns:
+                print(f"  Warning: column mismatch in '{src_path}' "
+                      f"for suffix '{suffix}' — union-merging by column name.")
+            dfs.append(df)
+
+        if not dfs:
+            return
+
+        merged = pd.concat(dfs, ignore_index=True, sort=False).fillna("")
+        merged.to_csv(out_path, sep="\t", index=False)
+        print(f"  Merged {len(dfs)} file(s) -> {os.path.basename(out_path)} "
+              f"({len(merged)} data line(s))")
 
     def _merge_ac_subdirs(self, suffix: str, out_dir: str,
                            rescue_suffix: str = "") -> None:
@@ -1208,7 +1496,8 @@ class Aggregator:
         """
         Rename results/samples/[old]/ → results/samples/[new]/ and every
         file/dir inside whose name starts with old_sname.  Also renames files
-        inside the AA results subdirectory.  Updates the SampleRecord paths.
+        inside the reconstruction results subdirectory.  Updates the
+        SampleRecord paths.
         """
         old_dir = os.path.join(self.samples_dir, old_sname)
         new_dir = os.path.join(self.samples_dir, new_sname)
@@ -1226,8 +1515,8 @@ class Aggregator:
             new_entry = new_sname + entry[len(old_sname):]
             os.rename(os.path.join(new_dir, entry),
                       os.path.join(new_dir, new_entry))
-            # If this is the AA results dir, rename files inside it too
-            if new_entry == f"{new_sname}_AA_results":
+            # If this is the reconstruction results dir, rename files inside it too
+            if new_entry == f"{new_sname}_reconstruction_results":
                 aa_dir = os.path.join(new_dir, new_entry)
                 if os.path.isdir(aa_dir):
                     for aa_file in os.listdir(aa_dir):
@@ -1240,7 +1529,7 @@ class Aggregator:
         rec = self.sample_registry.get(old_sname)
         if rec:
             if rec.aa_dir_dest:
-                rec.aa_dir_dest = os.path.join(new_dir, f"{new_sname}_AA_results")
+                rec.aa_dir_dest = os.path.join(new_dir, f"{new_sname}_reconstruction_results")
             if rec.cnv_bed_dest:
                 rec.cnv_bed_dest = os.path.join(new_dir, f"{new_sname}_CNV_CALLS.bed")
             if rec.cnvkit_tarball:
@@ -1278,9 +1567,14 @@ class Aggregator:
         TSV_SPECS = [
             ("_amplicon_classification_profiles.tsv", "sample_name",  False),
             ("_ecDNA_counts.tsv",                     "#sample",       False),
+            ("_fan_calls.tsv",                        "sample_name",   False),
             ("_feature_basic_properties.tsv",         "feature_ID",    True),
+            ("_feature_complexity.tsv",               "sample",        False),
             ("_feature_entropy.tsv",                  "sample",        False),
+            ("_feature_similarity_scores.tsv",        "Amp1",          True),
+            ("_feature_similarity_scores.tsv",        "Amp2",          True),
             ("_gene_list.tsv",                        "sample_name",   False),
+            ("_lncRNA_list.tsv",                      "sample_name",   False),
             ("_result_table.tsv",                     "Sample name",   False),
             ("_result_table.tsv",                     "Feature ID",    True),
         ]
@@ -1489,20 +1783,28 @@ class Aggregator:
         else:
             row["CNV BED file"] = NOT_PROVIDED
 
-        # ── AA PNG file ──────────────────────────────────────────────────
-        row["AA PNG file"] = self._resolve_amplicon_file(
+        # ── Graph PNG file ───────────────────────────────────────────────
+        row["Graph PNG file"] = self._resolve_amplicon_file(
             rec, amp_num, "png", effective_sname)
 
-        # ── AA PDF file ──────────────────────────────────────────────────
-        row["AA PDF file"] = self._resolve_amplicon_file(
+        # ── Graph PDF file ───────────────────────────────────────────────
+        row["Graph PDF file"] = self._resolve_amplicon_file(
             rec, amp_num, "pdf", effective_sname)
 
-        # ── AA cycles file ────────────────────────────────────────────────
-        row["AA cycles file"] = self._resolve_amplicon_file(
+        # ── Cycles PNG file ──────────────────────────────────────────────
+        row["Cycles PNG file"] = self._resolve_amplicon_file(
+            rec, amp_num, "cycles_png", effective_sname)
+
+        # ── Cycles PDF file ──────────────────────────────────────────────
+        row["Cycles PDF file"] = self._resolve_amplicon_file(
+            rec, amp_num, "cycles_pdf", effective_sname)
+
+        # ── Cycles file ──────────────────────────────────────────────────
+        row["Cycles file"] = self._resolve_amplicon_file(
             rec, amp_num, "cycles", effective_sname)
 
-        # ── AA graph file ─────────────────────────────────────────────────
-        row["AA graph file"] = self._resolve_amplicon_file(
+        # ── Graph file ───────────────────────────────────────────────────
+        row["Graph file"] = self._resolve_amplicon_file(
             rec, amp_num, "graph", effective_sname)
 
         # ── Run metadata JSON ────────────────────────────────────────────
@@ -1513,12 +1815,22 @@ class Aggregator:
         row["Sample metadata JSON"] = self._resolve_misc_path(
             rec, "sample_metadata_json", effective_sname, "_sample_metadata.json")
 
-        # ── AA directory ─────────────────────────────────────────────────
+        # ── Reconstruction tool ──────────────────────────────────────────
+        row["Reconstruction tool"] = rec.reconstruction_tool if rec else NOT_PROVIDED
+
+        # ── AA / AmpliconSuite-pipeline versions ─────────────────────────
+        row["AmpliconArchitect version"] = (
+            rec.aa_version if rec and rec.aa_version else NOT_PROVIDED)
+        row["AmpliconSuite-pipeline version"] = (
+            rec.amplicon_suite_pipeline_version
+            if rec and rec.amplicon_suite_pipeline_version else NOT_PROVIDED)
+
+        # ── Reconstruction directory ─────────────────────────────────────
         if rec and rec.aa_dir_dest and os.path.isdir(rec.aa_dir_dest):
-            row["AA directory"] = relative_to_results(
+            row["Reconstruction directory"] = relative_to_results(
                 rec.aa_dir_dest, self.results_dir)
         else:
-            row["AA directory"] = NOT_PROVIDED
+            row["Reconstruction directory"] = NOT_PROVIDED
 
         # ── cnvkit directory ─────────────────────────────────────────────
         if rec and rec.cnvkit_tarball and os.path.isfile(rec.cnvkit_tarball):
@@ -1543,15 +1855,15 @@ class Aggregator:
                                 amp_num: Optional[int],
                                 key: str, sname: str) -> str:
         """
-        Resolve a per-amplicon file (pdf, png, cycles, graph) for a given amplicon number.
-        Looks for the file inside rec.aa_dir_dest (the uncompressed AA results dir).
+        Resolve a per-amplicon file (pdf, png, cycles, graph, cycles_png,
+        cycles_pdf) for a given amplicon number. Looks for the file inside
+        rec.aa_dir_dest (the uncompressed reconstruction results dir), under
+        the canonical filename Stage 5 renames everything to.
         Returns a results-relative path, or NOT_PROVIDED.
         """
         if rec is None or amp_num is None or not rec.aa_dir_dest:
             return NOT_PROVIDED
-        ext_map = {"pdf": ".pdf", "png": ".png",
-                   "cycles": "_cycles.txt", "graph": "_graph.txt"}
-        ext = ext_map.get(key)
+        ext = AMPLICON_FILE_EXT_MAP.get(key)
         if not ext:
             return NOT_PROVIDED
         path = os.path.join(rec.aa_dir_dest, f"{sname}_amplicon{amp_num}{ext}")

@@ -69,6 +69,12 @@ python src/AmpliconSuiteAggregator.py -flist input_list.txt -o MyProject -u you@
 python src/AmpliconSuiteAggregator.py --files MyProject.tar.gz -o MyProject -u you@email.com --upload_only Yes -s prod
 ```
 
+## Input files
+
+For a breakdown of which per-sample files make up a classification project —
+which are essential, which are strongly recommended, and the naming patterns
+the Aggregator expects — see [INPUT_FILES.md](INPUT_FILES.md).
+
 ## Authors
 - [Jens Luebeck](https://github.com/jluebeck) *(main contact)*
 - Thorin Tabor

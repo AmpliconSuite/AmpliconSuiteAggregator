@@ -15,6 +15,7 @@ from __future__ import annotations  # enables built-in generic hints (list[], di
 
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -26,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "6.0.0"
+__version__ = "7.0.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -71,6 +72,7 @@ AC_RESULT_TABLE_SUFFIX = "_result_table.tsv"
 # Miscellaneous per-sample AA files (found as siblings to _AA_results/)
 MISC_AA_SUFFIXES: Tuple[str, ...] = (
     "_AA_CNV_SEEDS.bed",
+    "_CNV_SEEDS.bed",       # CoRAL's naming (no "AA_" infix)
     "_CNV_CALLS_unfiltered_gains.bed",
     "_finish_flag.txt",
     "_run_metadata.json",
@@ -80,17 +82,71 @@ MISC_AA_SUFFIXES: Tuple[str, ...] = (
     # suffix alone (".log") is too generic — we match by exact stem.
 )
 
+# Content-sniffing signals used to tell CoRAL output from AmpliconArchitect
+# output, since AC emits no tool-provenance column of its own. See
+# is_aa_summary_content()/is_coral_summary_content() below and
+# Aggregator._detect_reconstruction_tool() in asa_stages.py.
+CORAL_SUMMARY_RE = re.compile(r"\d+/\d+ amplicons solved")
+CORAL_BANNER_PREFIX = "CoRAL"          # e.g. "CoRAL v2.2.0" summary banner line
+CORAL_HEADER_PREFIX = "#CoRAL"         # future graph.txt/cycles.txt header line
+
+# Tool version banner lines, scanned out of AA/AmpliconSuite-pipeline logs.
+# "Amp\w*Suite" tolerates AmpliconSuite-pipeline's own logging typo
+# ("AmpiconSuite-pipeline version ...", missing the "l") alongside the
+# correctly-spelled form, in case it's ever fixed upstream.
+AA_VERSION_RE = re.compile(r"AmpliconArchitect version\s+(\S+)")
+AS_PIPELINE_VERSION_RE = re.compile(r"Amp\w*Suite-pipeline version\s+(\S+)")
+
+# Per-amplicon file kind -> canonical filename suffix. This is the naming
+# convention every per-amplicon file is normalized to on output (Stage 5
+# copy, Stage 6 resolve) — one source of truth for both.
+AMPLICON_FILE_EXT_MAP: Dict[str, str] = {
+    "cycles_png": "_cycles.png",
+    "cycles_pdf": "_cycles.pdf",
+    "cycles":     "_cycles.txt",
+    "graph":      "_graph.txt",
+    "pdf":        ".pdf",
+    "png":        ".png",
+}
+
+# (suffix_to_match, key) pairs used to *recognise* a per-amplicon source
+# file at discovery time. Ordered longest/most-specific-suffix-first so
+# collision-prone lookups (_cycles.png before the generic .png) resolve
+# correctly by construction. Deliberately broader than AMPLICON_FILE_EXT_MAP:
+# CoRAL's plotting code names the graph-plot image "{sname}_amplicon{N}_graph.png"
+# / "_graph.pdf" (infixed) rather than AA's bare "{sname}_amplicon{N}.png" /
+# ".pdf" — both spellings map to the same "png"/"pdf" key here, and get
+# normalized to the bare canonical form by Stage 5's copy.
+AMPLICON_FILE_DISCOVERY_SUFFIXES: List[Tuple[str, str]] = [
+    ("_cycles.png", "cycles_png"),
+    ("_cycles.pdf", "cycles_pdf"),
+    ("_cycles.txt", "cycles"),
+    ("_graph.txt",  "graph"),
+    ("_graph.png",  "png"),
+    ("_graph.pdf",  "pdf"),
+    (".pdf",        "pdf"),
+    (".png",        "png"),
+]
+
 # AC output files/dirs to merge into consolidated_classification/
-# Each entry: suffix, has_header (True/False/None=optional file), is_dir
+# Each entry: suffix, has_header (True/False/None=optional file), is_dir,
+# and optionally prefix_output (default True) — set False for AC outputs
+# whose on-disk name is NOT prefixed by the AC output name (e.g.
+# bfbarchitect_outputs/, which AC always names literally regardless of -o).
 AC_MERGE_TARGETS: List[Dict] = [
     {"suffix": "_amplicon_classification_profiles.tsv", "has_header": True,  "is_dir": False},
     {"suffix": "_annotated_cycles_files",               "has_header": None,  "is_dir": True,  "rescue_suffix": "_annotated_cycles.txt"},
+    {"suffix": "bfbarchitect_outputs",                  "has_header": None,  "is_dir": True,  "prefix_output": False},
     {"suffix": "_classification_bed_files",             "has_header": None,  "is_dir": True,  "rescue_suffix": "_intervals.bed"},
     {"suffix": "_ecDNA_context_calls.tsv",              "has_header": False, "is_dir": False},  # no header, may not exist
     {"suffix": "_ecDNA_counts.tsv",                     "has_header": True,  "is_dir": False},
+    {"suffix": "_fan_calls.tsv",                        "has_header": True,  "is_dir": False},  # AC2+, may not exist
     {"suffix": "_feature_basic_properties.tsv",         "has_header": True,  "is_dir": False},
-    {"suffix": "_feature_entropy.tsv",                  "has_header": True,  "is_dir": False},
+    {"suffix": "_feature_complexity.tsv",               "has_header": True,  "is_dir": False},  # AC2+ rename of _feature_entropy.tsv
+    {"suffix": "_feature_entropy.tsv",                  "has_header": True,  "is_dir": False},  # pre-AC2
+    {"suffix": "_feature_similarity_scores.tsv",        "has_header": True,  "is_dir": False},  # AC2+, may not exist
     {"suffix": "_gene_list.tsv",                        "has_header": True,  "is_dir": False},
+    {"suffix": "_lncRNA_list.tsv",                      "has_header": True,  "is_dir": False},  # AC2+, may not exist
     {"suffix": "_result_table.tsv",                     "has_header": True,  "is_dir": False},
     {"suffix": "_SV_summaries",                         "has_header": None,  "is_dir": True,  "rescue_suffix": "_SV_summary.tsv"},
 ]
@@ -99,10 +155,12 @@ AC_MERGE_TARGETS: List[Dict] = [
 PATH_COLUMNS: Tuple[str, ...] = (
     "Feature BED file",
     "CNV BED file",
-    "AA PNG file",
-    "AA PDF file",
-    "AA cycles file",
-    "AA graph file",
+    "Graph PNG file",
+    "Graph PDF file",
+    "Cycles PNG file",
+    "Cycles PDF file",
+    "Cycles file",
+    "Graph file",
     "Run metadata JSON",
     "Sample metadata JSON",
 )
@@ -110,15 +168,18 @@ PATH_COLUMNS: Tuple[str, ...] = (
 # List-valued columns in result_table / run.json
 LIST_COLUMNS: Tuple[str, ...] = ("Location", "Oncogenes", "All genes")
 
-# Columns for aggregated_results.tsv — specific order, excludes AA/cnvkit directory.
+# Columns for aggregated_results.tsv — specific order, excludes reconstruction/cnvkit directory.
 # List fields are rendered as Python repr strings (e.g. ['EGFR', 'MYC']).
 AGG_CSV_COLUMNS: Tuple[str, ...] = (
     "Sample name", "AA amplicon number", "Feature ID", "Classification",
+    "Contains viral", "Reconstruction tool",
+    "AmpliconArchitect version", "AmpliconSuite-pipeline version",
     "Location", "Oncogenes", "Complexity score", "Captured interval length",
     "Feature median copy number", "Feature maximum copy number", "Filter flag",
     "Reference version", "Tissue of origin", "Sample type",
-    "Feature BED file", "CNV BED file", "AA PNG file", "AA PDF file",
-    "AA cycles file", "AA graph file",
+    "Feature BED file", "CNV BED file",
+    "Graph PNG file", "Graph PDF file", "Cycles PNG file", "Cycles PDF file",
+    "Cycles file", "Graph file",
     "Run metadata JSON", "Sample metadata JSON", "All genes",
 )
 
@@ -128,6 +189,10 @@ RUN_JSON_COLUMNS: Tuple[str, ...] = (
     "AA amplicon number",
     "Feature ID",
     "Classification",
+    "Contains viral",
+    "Reconstruction tool",
+    "AmpliconArchitect version",
+    "AmpliconSuite-pipeline version",
     "Location",
     "Oncogenes",
     "All genes",
@@ -141,13 +206,15 @@ RUN_JSON_COLUMNS: Tuple[str, ...] = (
     "Sample type",
     "Feature BED file",
     "CNV BED file",
-    "AA PNG file",
-    "AA PDF file",
-    "AA cycles file",
-    "AA graph file",
+    "Graph PNG file",
+    "Graph PDF file",
+    "Cycles PNG file",
+    "Cycles PDF file",
+    "Cycles file",
+    "Graph file",
     "Run metadata JSON",
     "Sample metadata JSON",
-    "AA directory",
+    "Reconstruction directory",
     "cnvkit directory",
 )
 
@@ -186,8 +253,14 @@ class SampleRecord:
     timing_log: Optional[str] = None
     pipeline_log: Optional[str] = None         # top-level [name].log
 
-    # AA per-amplicon files discovered inside aa_results_dir
-    # { amplicon_num (int) -> { 'pdf': path, 'png': path, 'cycles': path, 'graph': path } }
+    # Tool versions scraped from log content (AA runs only — see
+    # extract_tool_versions() and Aggregator._extract_log_versions()).
+    aa_version: Optional[str] = None
+    amplicon_suite_pipeline_version: Optional[str] = None
+
+    # AA/CoRAL per-amplicon files discovered inside aa_results_dir
+    # { amplicon_num (int) -> { 'pdf': path, 'png': path, 'cycles': path,
+    #                           'graph': path, 'cycles_png': path, 'cycles_pdf': path } }
     amplicon_files: Dict = field(default_factory=dict)
 
     # Summary file inside aa_results_dir
@@ -196,8 +269,14 @@ class SampleRecord:
     # Classification dir where this sample's AC output originated
     ac_source_dir: Optional[str] = None
 
+    # Reconstruction tool that produced this sample's graph/cycles files.
+    # Defaults to AmpliconArchitect; upgraded to "CoRAL" during discovery
+    # when a content-based CoRAL signal is found (see
+    # Aggregator._detect_reconstruction_tool in asa_stages.py).
+    reconstruction_tool: str = "AmpliconArchitect"
+
     # Output-tree destination paths — set by Stage 5, consumed by Stage 6
-    aa_dir_dest:    Optional[str] = None  # results/samples/[s]/[s]_AA_results/ (uncompressed dir)
+    aa_dir_dest:    Optional[str] = None  # results/samples/[s]/[s]_reconstruction_results/ (uncompressed dir)
     cnvkit_tarball: Optional[str] = None  # results/samples/[s]/[s]_cnvkit_output.tar.gz
     cnv_bed_dest:   Optional[str] = None  # results/samples/[s]/[s]_CNV_CALLS.bed (uncompressed)
 
@@ -265,13 +344,47 @@ def read_name_map(name_map_file: Optional[str]) -> Dict[str, str]:
     return remap
 
 
+def extract_tool_versions(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Scan AA/AmpliconSuite-pipeline log text for version banner lines, e.g.
+    "AmpliconArchitect version 1.5.r1" and "AmpiconSuite-pipeline version
+    1.3.6". Returns (aa_version, pipeline_version); either may be None if
+    its banner line isn't present in this particular log.
+    """
+    aa_m = AA_VERSION_RE.search(text)
+    pipeline_m = AS_PIPELINE_VERSION_RE.search(text)
+    return (aa_m.group(1) if aa_m else None,
+            pipeline_m.group(1) if pipeline_m else None)
+
+
+def is_aa_summary_content(first_line: str) -> bool:
+    """Check whether a summary file's first line matches AA's convention."""
+    return first_line.startswith("#Amplicons")
+
+
+def is_coral_summary_content(lines: List[str]) -> bool:
+    """
+    Check whether a summary file's leading lines match CoRAL's convention.
+    CoRAL summaries may open with a "CoRAL v{version}" banner line before
+    the "N/M amplicons solved." line, or omit the banner entirely depending
+    on version — scan the first few lines rather than assuming line 1.
+    """
+    for line in lines[:5]:
+        if line.startswith(CORAL_BANNER_PREFIX) or CORAL_SUMMARY_RE.search(line):
+            return True
+    return False
+
+
 def is_valid_aa_results_dir(dirpath: str) -> bool:
     """
-    Validate that a directory is a genuine AA results directory.
+    Validate that a directory is a genuine AA or CoRAL results directory.
 
     Rules:
-      - Must contain exactly one *_summary.txt file.
-      - That file's first line must start with '#Amplicons'.
+      - Must contain exactly one *_summary.txt file (this also matches
+        CoRAL's older *_amplicon_summary.txt naming, which ends in the
+        same suffix).
+      - That file's leading content must match either AA's or CoRAL's
+        summary convention (see is_aa_summary_content/is_coral_summary_content).
       - The directory must NOT be named 'files' (AC copy directory).
     """
     if os.path.basename(dirpath) == "files":
@@ -290,8 +403,8 @@ def is_valid_aa_results_dir(dirpath: str) -> bool:
     summary_path = os.path.join(dirpath, summaries[0])
     try:
         with open(summary_path) as fh:
-            first_line = fh.readline()
-        return first_line.startswith("#Amplicons")
+            lines = [fh.readline() for _ in range(5)]
+        return is_aa_summary_content(lines[0]) or is_coral_summary_content(lines)
     except OSError as e:
         print(f"Warning: could not read {summary_path}: {e}")
         return False
@@ -345,6 +458,25 @@ def make_tarball(source_dir: str, dest_tar_path: str,
                 fpath = os.path.join(root, fname)
                 arcname = os.path.relpath(fpath, parent)
                 tar.add(fpath, arcname=arcname)
+
+
+def convert_cnvkit_cns_to_bed(cns_path: str, dest_path: str, min_cn: float = 0.0) -> None:
+    """
+    Convert a plain CNVkit .cns segment file (not .call.cns/.bintest.cns)
+    into a CNV_CALLS.bed, recovering absolute copy number from the log2
+    ratio column. Mirrors PrepareAA/scripts/convert_cns_to_bed.py's
+    conversion formula (2**(log2_ratio + 1)) — used as a fallback for
+    tools like CoRAL that produce raw cnvkit segments but, unlike
+    AmpliconSuite-pipeline, never run this conversion step themselves.
+    """
+    with open(cns_path) as infile, open(dest_path, "w") as outfile:
+        next(infile)  # header
+        for line in infile:
+            fields = line.rstrip("\n").split("\t")
+            s, e = int(fields[1]), int(fields[2])
+            cn = 2 ** (float(fields[4]) + 1)
+            if not cn < min_cn:
+                outfile.write("\t".join(fields[0:3] + [f"size={e - s}", str(cn)]) + "\n")
 
 
 def safe_copy_file(src: str, dest: str) -> bool:

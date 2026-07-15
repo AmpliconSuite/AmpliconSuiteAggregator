@@ -1,8 +1,8 @@
 [project]
 name = "AmpliconSuiteAggregator"
-version = "6.0.0"
+version = "7.0.0"
 authors = [
-  { name="Thorin Tabor", email="tmtabor@cloud.ucsd.edu" },
+  { name="Thorin Tabor" },
   { name = "Jens Luebeck", email="jluebeck@ucsd.edu" },
 ]
 description = "Aggregator tool for multiple Amplicon Architect outputs"

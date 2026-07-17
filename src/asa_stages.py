@@ -44,7 +44,7 @@ from asa_aggregator import (
     is_valid_aa_results_dir, is_classification_dir,
     is_aa_summary_content, is_coral_summary_content,
     make_tarball, safe_copy_file, safe_copytree, relative_to_results,
-    convert_cnvkit_cns_to_bed, extract_tool_versions,
+    convert_cnvkit_cns_to_bed, extract_tool_versions, compress_reconstruct_logs,
 )
 
 from asa_aggregator import __version__
@@ -70,10 +70,15 @@ class Aggregator:
       classif_dir       — <results_dir>/consolidated_classification/
       other_dir         — <results_dir>/other_files/
       sample_registry   — { sname -> SampleRecord }  (populated by Stage 3)
-      classification_dirs — [ dirpath ]               (populated by Stage 3)
+      classification_dirs — [ dirpath ]               (populated by Stage 3; pruned by
+                            _resolve_ac_generations() at the start of Stage 4 to drop
+                            superseded reclassification generations)
       aux_dirs          — [ dirpath ]                 (populated by Stage 3)
       _files_dirs       — { cls_dir -> files_subdir } (populated by Stage 3)
       _floating_cnv_beds — { sname -> path }          (populated by Stage 3)
+      _classification_result_tables — { cls_dir -> result_table_path } (populated by Stage 3)
+      superseded_classification_dirs — [ dirpath ]    (populated by _resolve_ac_generations();
+                            dirs excluded as an older/superseded AC reclassification generation)
       completed         — True only after successful _finalise()
     """
 
@@ -112,6 +117,8 @@ class Aggregator:
         self.aux_dirs:            List[str] = []
         self._files_dirs:         Dict[str, str] = {}
         self._floating_cnv_beds:  Dict[str, str] = {}
+        self._classification_result_tables: Dict[str, str] = {}
+        self.superseded_classification_dirs: List[str] = []
 
         self._run_pipeline()
 
@@ -389,6 +396,7 @@ class Aggregator:
                 is_cls, _profiles, _rt = is_classification_dir(dpath)
                 if is_cls:
                     self.classification_dirs.append(dpath)
+                    self._classification_result_tables[dpath] = _rt
                     if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                         print(f"  Classif dir  : {dpath}")
                     files_sub = os.path.join(dpath, "files")
@@ -860,6 +868,184 @@ class Aggregator:
     # Stage 4 — result_table parser + sample registry reconciliation
     # ==================================================================
 
+    def _resolve_ac_generations(self) -> None:
+        """
+        Detect when the same cohort was classified more than once — e.g. an
+        initial per-sample AC pass, later redone wholesale as a single
+        reclassification with a newer AC — and drop the superseded
+        generation's classification dir(s) from self.classification_dirs
+        entirely, before Stage 4 parses any result_table.tsv or Stage 5
+        merges any AC_MERGE_TARGETS file.
+
+        Without this, two classification dirs covering the same samples
+        would each contribute their own copy of every merged AC output
+        (result_table.tsv, amplicon_classification_profiles.tsv, etc.),
+        silently doubling row counts in the physical merged files even
+        though Stage 4's own dict-based sample lookup happens to end up
+        with only one copy per sample (whichever dir os.walk visited
+        last — an accident of traversal order, not a real decision).
+
+        Resolution is per-sample, not per-group: for every Sample name
+        claimed by more than one classification dir, the claimants are
+        ranked and the highest-ranked one "wins" that sample. Ranking:
+          1. AC version, parsed from the table's own "AC version" column
+             when present and non-NA, else scraped from the dir's own AC
+             log (_scan_classification_log_version) — a dir with no such
+             column/log at all (pre-AC-2.0 schema) ranks below any dir
+             that has one.
+          2. File mtime of the result_table.tsv, as a tiebreak only, for
+             when the version signal is equal or unavailable on both
+             sides.
+        A dir that never wins any of its own contested samples is fully
+        superseded and is dropped from self.classification_dirs entirely
+        (the common "reclassified the whole cohort" case — e.g. many
+        single-sample dirs all superseded by one newer pooled dir covering
+        all of them). A dir that wins some contested samples but loses
+        others is a genuine partial-overlap case — that's left alone
+        beyond a loud warning: silently splicing rows at that granularity
+        risks mixing two different classification runs' answers for the
+        same sample, so it's surfaced for manual review rather than
+        resolved here.
+        """
+        if len(self.classification_dirs) < 2:
+            return
+
+        # cls_dir -> (result_table_path, {sample names it covers})
+        dir_info: Dict[str, Tuple[str, set]] = {}
+        for cls_dir in self.classification_dirs:
+            rt_path = self._classification_result_tables.get(cls_dir)
+            if not rt_path or not os.path.isfile(rt_path):
+                continue
+            try:
+                samples = set(
+                    pd.read_csv(rt_path, sep="\t", usecols=["Sample name"],
+                                dtype=str)["Sample name"].dropna().unique()
+                )
+            except Exception as e:
+                print(f"  Warning: could not pre-scan {rt_path} for AC "
+                      f"reclassification detection: {e}")
+                continue
+            if samples:
+                dir_info[cls_dir] = (rt_path, samples)
+
+        if len(dir_info) < 2:
+            return
+
+        sample_to_dirs: Dict[str, List[str]] = defaultdict(list)
+        for cls_dir, (_, samples) in dir_info.items():
+            for sname in samples:
+                sample_to_dirs[sname].append(cls_dir)
+
+        contested_dirs = {d for dirs in sample_to_dirs.values() if len(dirs) > 1
+                           for d in dirs}
+        if not contested_dirs:
+            return
+
+        rank_cache: Dict[str, Tuple[Tuple[int, ...], float]] = {
+            d: self._classification_generation_rank(dir_info[d][0])
+            for d in contested_dirs
+        }
+
+        winner_for_sample: Dict[str, str] = {
+            sname: max(dirs, key=lambda d: rank_cache[d])
+            for sname, dirs in sample_to_dirs.items() if len(dirs) > 1
+        }
+
+        to_drop: set = set()
+        partial: List[str] = []
+        for d in sorted(contested_dirs):
+            contested_claimed = [s for s in dir_info[d][1] if s in winner_for_sample]
+            wins = [s for s in contested_claimed if winner_for_sample[s] == d]
+            if not wins:
+                to_drop.add(d)
+            elif len(wins) < len(contested_claimed):
+                partial.append(d)
+
+        for d in sorted(to_drop):
+            beaten_by = sorted({winner_for_sample[s] for s in dir_info[d][1]
+                                 if s in winner_for_sample})
+            beaten_desc = ", ".join(
+                f"'{b}' ({self._describe_classification_generation(dir_info[b][0])})"
+                for b in beaten_by
+            )
+            desc_d = self._describe_classification_generation(dir_info[d][0])
+            print(f"  Classification dir '{d}' ({desc_d}) is superseded by "
+                  f"{beaten_desc} for all {len(dir_info[d][1])} sample(s) — "
+                  f"excluding it from aggregation.")
+
+        for d in partial:
+            desc_d = self._describe_classification_generation(dir_info[d][0])
+            lost = sorted(s for s in dir_info[d][1]
+                           if winner_for_sample.get(s) not in (None, d))
+            print(f"  Warning: classification dir '{d}' ({desc_d}) is "
+                  f"superseded for {len(lost)} of its {len(dir_info[d][1])} "
+                  f"sample(s) but authoritative for the rest — partial "
+                  f"overlap can't be resolved automatically at file "
+                  f"granularity; keeping it in full and leaving the "
+                  f"contested sample(s) ({', '.join(lost[:5])}"
+                  f"{', ...' if len(lost) > 5 else ''}) for manual review.")
+
+        if to_drop:
+            self.superseded_classification_dirs.extend(sorted(to_drop))
+            self.classification_dirs = [d for d in self.classification_dirs
+                                         if d not in to_drop]
+            self._files_dirs = {d: v for d, v in self._files_dirs.items()
+                                 if d not in to_drop}
+
+    def _sniff_ac_version_for_generation(self, rt_path: str) -> Optional[str]:
+        """
+        AC version for an entire classification generation (not a single
+        sample): the result table's own "AC version" column when present
+        and non-NA, else scraped from the dir's own AC log. None if
+        neither source has it — the pre-AC-2.0 schema this whole check
+        exists to rank below any dir that does.
+        """
+        try:
+            header = pd.read_csv(rt_path, sep="\t", nrows=0).columns
+        except Exception:
+            header = []
+        if "AC version" in header:
+            try:
+                col = pd.read_csv(rt_path, sep="\t", usecols=["AC version"],
+                                   dtype=str, keep_default_na=False)["AC version"]
+                for v in col:
+                    if not not_provided(v):
+                        return v
+            except Exception:
+                pass
+        return self._scan_classification_log_version(os.path.dirname(rt_path))
+
+    @staticmethod
+    def _version_sort_key(version: Optional[str], width: int = 5) -> Tuple[int, ...]:
+        """
+        Fixed-width numeric sort key for a dotted version string, so e.g.
+        "2.0" and "2.0.0" compare equal instead of one being treated as a
+        prefix-shorter (and therefore "lesser") tuple. A missing version
+        sorts below every real version via an all-negative key of the
+        same width.
+        """
+        if not version:
+            return tuple([-1] * width)
+        parts = []
+        for chunk in version.strip().split(".")[:width]:
+            digits = "".join(ch for ch in chunk if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        parts += [0] * (width - len(parts))
+        return tuple(parts)
+
+    def _classification_generation_rank(self, rt_path: str) -> Tuple[Tuple[int, ...], float]:
+        """(version_sort_key, mtime) — version first, mtime only as a tiebreak."""
+        version = self._sniff_ac_version_for_generation(rt_path)
+        try:
+            mtime = os.path.getmtime(rt_path)
+        except OSError:
+            mtime = 0.0
+        return (self._version_sort_key(version), mtime)
+
+    def _describe_classification_generation(self, rt_path: str) -> str:
+        version = self._sniff_ac_version_for_generation(rt_path)
+        return f"AC {version}" if version else "no AC version info"
+
     def _stage4_parse_result_tables(self) -> None:
         """
         Find and parse all *_result_table.tsv files within the classification
@@ -878,6 +1064,8 @@ class Aggregator:
         in run.json.
         """
         print("\n--- Stage 4: Result table parsing ---")
+
+        self._resolve_ac_generations()
 
         # { 'sample_N' -> [ row_dict, ... ] }  preserves run.json index keys
         self.run_json_groups: Dict[str, List[dict]] = {}
@@ -1242,6 +1430,8 @@ class Aggregator:
 
         # ---- AA results directory (uncompressed copy) ------------------
         rec.aa_dir_dest = self._copy_aa_results_dir(sname, rec, sample_out)
+        if rec.aa_dir_dest:
+            compress_reconstruct_logs(rec.aa_dir_dest)
 
         # ---- cnvkit tarball ---------------------------------------------
         rec.cnvkit_tarball = self._build_cnvkit_tarball(sname, rec, sample_out)

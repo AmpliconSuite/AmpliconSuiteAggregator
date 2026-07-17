@@ -13,6 +13,7 @@ Pipeline stages (implemented in separate segments):
 
 from __future__ import annotations  # enables built-in generic hints (list[], dict[], etc.) on Python 3.8/3.9
 
+import gzip
 import json
 import os
 import re
@@ -49,8 +50,15 @@ LEGACY_CNV_BED_SUFFIX: str = "_uncorr_CN.bed"
 # Whitelist of file suffixes kept when copying a sample's AA results directory.
 # Anything not matching one of these suffixes is dropped (hidden files are always dropped).
 AA_DIR_INCLUDE_SUFFIXES: Tuple[str, ...] = (
-    "_graph.txt", "_cycles.txt", ".png", ".pdf", "_summary.txt", ".log",
+    "_graph.txt", "_cycles.txt", ".png", ".pdf", "_summary.txt", ".log", ".log.gz",
 )
+
+# CoRAL's raw solver-trace log (can run into the tens of MB) — unlike the
+# AA/pipeline logs extract_tool_versions() scrapes, it carries no tool-version
+# banner, so there is nothing downstream that ever needs to read it
+# uncompressed. Compressed unconditionally by compress_reconstruct_logs()
+# below, not by a size threshold.
+RECONSTRUCT_LOG_SUFFIX = "_reconstruct.log"
 
 # Recognised archive extensions (in priority order for nested extraction)
 ARCHIVE_EXTENSIONS: Tuple[str, ...] = (".tar.gz", ".tar", ".zip")
@@ -546,6 +554,33 @@ def safe_copytree(src: str, dest: str,
     except Exception as e:
         print(f"Warning: could not copy tree {src} -> {dest}: {e}")
         return False
+
+
+def compress_reconstruct_logs(dest_dir: str) -> None:
+    """
+    Gzip-compress any CoRAL *_reconstruct.log file sitting directly inside
+    dest_dir, in place (the original is removed after a successful
+    compression, the .gz is kept). A prior pass's output already ends in
+    .log.gz and won't match RECONSTRUCT_LOG_SUFFIX, so this is naturally
+    idempotent on reaggregation without needing to track what it already did.
+    """
+    try:
+        entries = os.listdir(dest_dir)
+    except OSError:
+        return
+    for fname in entries:
+        if not fname.endswith(RECONSTRUCT_LOG_SUFFIX):
+            continue
+        fpath = os.path.join(dest_dir, fname)
+        if not os.path.isfile(fpath):
+            continue
+        gz_path = fpath + ".gz"
+        try:
+            with open(fpath, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.remove(fpath)
+        except OSError as e:
+            print(f"Warning: could not compress {fpath}: {e}")
 
 
 def relative_to_results(abs_path: str, results_dir: str) -> str:

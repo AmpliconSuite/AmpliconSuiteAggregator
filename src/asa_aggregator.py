@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "7.0.0"
+__version__ = "7.2.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -90,12 +90,14 @@ CORAL_SUMMARY_RE = re.compile(r"\d+/\d+ amplicons solved")
 CORAL_BANNER_PREFIX = "CoRAL"          # e.g. "CoRAL v2.2.0" summary banner line
 CORAL_HEADER_PREFIX = "#CoRAL"         # future graph.txt/cycles.txt header line
 
-# Tool version banner lines, scanned out of AA/AmpliconSuite-pipeline logs.
+# Tool version banner lines, scanned out of AA/AmpliconSuite-pipeline/AC logs.
 # "Amp\w*Suite" tolerates AmpliconSuite-pipeline's own logging typo
 # ("AmpiconSuite-pipeline version ...", missing the "l") alongside the
 # correctly-spelled form, in case it's ever fixed upstream.
 AA_VERSION_RE = re.compile(r"AmpliconArchitect version\s+(\S+)")
 AS_PIPELINE_VERSION_RE = re.compile(r"Amp\w*Suite-pipeline version\s+(\S+)")
+# AC's own banner has no "version" keyword, e.g. "AmpliconClassifier 2.0.0".
+AC_VERSION_RE = re.compile(r"AmpliconClassifier\s+(\S+)")
 
 # Per-amplicon file kind -> canonical filename suffix. This is the naming
 # convention every per-amplicon file is normalized to on output (Stage 5
@@ -132,11 +134,16 @@ AMPLICON_FILE_DISCOVERY_SUFFIXES: List[Tuple[str, str]] = [
 # Each entry: suffix, has_header (True/False/None=optional file), is_dir,
 # and optionally prefix_output (default True) — set False for AC outputs
 # whose on-disk name is NOT prefixed by the AC output name (e.g.
-# bfbarchitect_outputs/, which AC always names literally regardless of -o).
+# bfbarchitect_outputs/, which AC always names literally regardless of -o) —
+# and compress (default False) — set True to emit the merged directory as a
+# single .tar.gz rather than a loose subdirectory (bfbarchitect_outputs can
+# be large; compressing it keeps the aggregated tree tidy). A compressed
+# target round-trips on reaggregation because Stage 2's nested-archive pass
+# expands the emitted .tar.gz back into a plain dir before discovery.
 AC_MERGE_TARGETS: List[Dict] = [
     {"suffix": "_amplicon_classification_profiles.tsv", "has_header": True,  "is_dir": False},
     {"suffix": "_annotated_cycles_files",               "has_header": None,  "is_dir": True,  "rescue_suffix": "_annotated_cycles.txt"},
-    {"suffix": "bfbarchitect_outputs",                  "has_header": None,  "is_dir": True,  "prefix_output": False},
+    {"suffix": "bfbarchitect_outputs",                  "has_header": None,  "is_dir": True,  "prefix_output": False, "compress": True},
     {"suffix": "_classification_bed_files",             "has_header": None,  "is_dir": True,  "rescue_suffix": "_intervals.bed"},
     {"suffix": "_ecDNA_context_calls.tsv",              "has_header": False, "is_dir": False},  # no header, may not exist
     {"suffix": "_ecDNA_counts.tsv",                     "has_header": True,  "is_dir": False},
@@ -147,6 +154,7 @@ AC_MERGE_TARGETS: List[Dict] = [
     {"suffix": "_feature_similarity_scores.tsv",        "has_header": True,  "is_dir": False},  # AC2+, may not exist
     {"suffix": "_gene_list.tsv",                        "has_header": True,  "is_dir": False},
     {"suffix": "_lncRNA_list.tsv",                      "has_header": True,  "is_dir": False},  # AC2+, may not exist
+    {"suffix": ".log",                                  "has_header": False, "is_dir": False},  # AC's own log (top-level only; scraped for AC version, see _scan_classification_log_version)
     {"suffix": "_result_table.tsv",                     "has_header": True,  "is_dir": False},
     {"suffix": "_SV_summaries",                         "has_header": None,  "is_dir": True,  "rescue_suffix": "_SV_summary.tsv"},
 ]
@@ -174,6 +182,7 @@ AGG_CSV_COLUMNS: Tuple[str, ...] = (
     "Sample name", "AA amplicon number", "Feature ID", "Classification",
     "Contains viral", "Reconstruction tool",
     "AmpliconArchitect version", "AmpliconSuite-pipeline version",
+    "AmpliconClassifier version",
     "Location", "Oncogenes", "Complexity score", "Captured interval length",
     "Feature median copy number", "Feature maximum copy number", "Filter flag",
     "Reference version", "Tissue of origin", "Sample type",
@@ -193,6 +202,7 @@ RUN_JSON_COLUMNS: Tuple[str, ...] = (
     "Reconstruction tool",
     "AmpliconArchitect version",
     "AmpliconSuite-pipeline version",
+    "AmpliconClassifier version",
     "Location",
     "Oncogenes",
     "All genes",
@@ -253,10 +263,18 @@ class SampleRecord:
     timing_log: Optional[str] = None
     pipeline_log: Optional[str] = None         # top-level [name].log
 
-    # Tool versions scraped from log content (AA runs only — see
-    # extract_tool_versions() and Aggregator._extract_log_versions()).
+    # Tool versions. Primary source is the sample's own result_table.tsv row
+    # ("AS-p version"/"AA version"/"AC version" columns, written by AC's
+    # make_results_table.py from run_metadata.json) when populated; falls
+    # back to log content scraping otherwise (see extract_tool_versions() and
+    # Aggregator._extract_log_versions()/_scan_classification_log_version()).
+    # The result_table columns are reliably populated only when AC was run
+    # as part of a single combined AmpliconSuite-pipeline.py --run_AC
+    # invocation — the common "reclassify an existing AA cohort" workflow
+    # leaves them "NA", which is exactly what the log-scrape fallback covers.
     aa_version: Optional[str] = None
     amplicon_suite_pipeline_version: Optional[str] = None
+    ac_version: Optional[str] = None
 
     # AA/CoRAL per-amplicon files discovered inside aa_results_dir
     # { amplicon_num (int) -> { 'pdf': path, 'png': path, 'cycles': path,
@@ -266,7 +284,9 @@ class SampleRecord:
     # Summary file inside aa_results_dir
     aa_summary_file: Optional[str] = None
 
-    # Classification dir where this sample's AC output originated
+    # Classification dir where this sample's AC output originated (set in
+    # Stage 4 from the result_table.tsv's own location; also where
+    # _scan_classification_log_version() looks for AC's own log)
     ac_source_dir: Optional[str] = None
 
     # Reconstruction tool that produced this sample's graph/cycles files.
@@ -344,17 +364,20 @@ def read_name_map(name_map_file: Optional[str]) -> Dict[str, str]:
     return remap
 
 
-def extract_tool_versions(text: str) -> Tuple[Optional[str], Optional[str]]:
+def extract_tool_versions(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Scan AA/AmpliconSuite-pipeline log text for version banner lines, e.g.
-    "AmpliconArchitect version 1.5.r1" and "AmpiconSuite-pipeline version
-    1.3.6". Returns (aa_version, pipeline_version); either may be None if
-    its banner line isn't present in this particular log.
+    Scan AA/AmpliconSuite-pipeline/AmpliconClassifier log text for version
+    banner lines, e.g. "AmpliconArchitect version 1.5.r1", "AmpiconSuite-
+    pipeline version 1.3.6", and "AmpliconClassifier 2.0.0". Returns
+    (aa_version, pipeline_version, ac_version); any may be None if its
+    banner line isn't present in this particular log.
     """
     aa_m = AA_VERSION_RE.search(text)
     pipeline_m = AS_PIPELINE_VERSION_RE.search(text)
+    ac_m = AC_VERSION_RE.search(text)
     return (aa_m.group(1) if aa_m else None,
-            pipeline_m.group(1) if pipeline_m else None)
+            pipeline_m.group(1) if pipeline_m else None,
+            ac_m.group(1) if ac_m else None)
 
 
 def is_aa_summary_content(first_line: str) -> bool:

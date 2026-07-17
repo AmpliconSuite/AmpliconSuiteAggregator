@@ -254,6 +254,7 @@ class Aggregator:
                                and not any(part not in (".", "..") and part.startswith(".")
                                            for part in m.name.split("/") if part)]
                     tf.extractall(dest, members=members)
+            dest = self._unwrap_redundant_dir(dest, dest_parent, stem)
             print(f"  Extracted: {archive_path} -> {dest}")
             return dest
         except Exception as e:
@@ -261,6 +262,44 @@ class Aggregator:
             if os.path.exists(dest) and not os.listdir(dest):
                 shutil.rmtree(dest, ignore_errors=True)
             return None
+
+    def _unwrap_redundant_dir(self, dest: str, dest_parent: str,
+                              stem: str) -> str:
+        """
+        Collapse a redundant self-similar wrapper directory produced when one
+        of our own tarballs is re-extracted, returning the path to use as the
+        extracted dir.
+
+        make_tarball roots every archive it writes at the source dir's
+        basename, so a tarball we emitted — e.g. DMS273_cnvkit_output.tar.gz
+        holding DMS273_cnvkit_output/... or bfbarchitect_outputs.tar.gz
+        holding bfbarchitect_outputs/... — expands, inside its own
+        stem-named extraction dir, to DMS273_cnvkit_output/DMS273_cnvkit_output/.
+        Left alone this accrues one more nesting level on every
+        reaggregation (and, worse, misdirects discovery to the empty outer
+        wrapper). When the sole extracted entry is a directory whose name
+        equals the archive stem — the exact signature of that round-trip —
+        hoist it up to dest_parent and drop the wrapper so re-emitted
+        archives stay byte-for-byte structurally identical across passes.
+
+        Gated to name == stem so genuine first-pass inputs (whose inner dir,
+        if any, is named for the sample/cohort, not the archive) are never
+        touched.
+        """
+        try:
+            entries = [e for e in os.listdir(dest) if not e.startswith(".")]
+        except OSError:
+            return dest
+        if entries != [stem] or not os.path.isdir(os.path.join(dest, stem)):
+            return dest
+
+        inner = os.path.join(dest, stem)
+        hold = self._unique_dest(dest_parent, stem + ".__unwrap__")
+        os.rename(inner, hold)
+        shutil.rmtree(dest, ignore_errors=True)
+        final = self._unique_dest(dest_parent, stem)
+        os.rename(hold, final)
+        return final
 
     def _find_nested_archives(self) -> List[str]:
         archives = []
@@ -551,7 +590,12 @@ class Aggregator:
         rec.amplicon_suite_pipeline_version is still unset. First log found
         with a given version line wins; called from multiple discovery
         sites (nested AA-tool log, sibling pipeline log) since neither
-        source is guaranteed to carry both lines.
+        source is guaranteed to carry both lines. Also opportunistically
+        fills rec.ac_version if this particular log happens to carry an
+        AmpliconClassifier banner too (e.g. a combined-invocation pipeline
+        log) — but this isn't AC version's primary source, see Stage 4's
+        _scan_classification_log_version() and result_table.tsv's own
+        "AC version" column, which take priority.
         """
         if rec.aa_version and rec.amplicon_suite_pipeline_version:
             return
@@ -560,11 +604,13 @@ class Aggregator:
                 text = fh.read()
         except OSError:
             return
-        aa_v, pipeline_v = extract_tool_versions(text)
+        aa_v, pipeline_v, ac_v = extract_tool_versions(text)
         if aa_v and not rec.aa_version:
             rec.aa_version = aa_v
         if pipeline_v and not rec.amplicon_suite_pipeline_version:
             rec.amplicon_suite_pipeline_version = pipeline_v
+        if ac_v and not rec.ac_version:
+            rec.ac_version = ac_v
 
     def _register_cnvkit_dir(self, sname: str, dpath: str) -> None:
         rec = self._get_or_create_record(sname)
@@ -912,6 +958,32 @@ class Aggregator:
 
         Duplicate sample names (across multiple result tables) are handled by
         keeping the last-seen set of rows and printing a light warning.
+
+        Also resolves per-sample tool versions here. aa_version/
+        amplicon_suite_pipeline_version, in priority order:
+          1. The table's own "AA version"/"AS-p version" columns (written by
+             AC's make_results_table.py from run_metadata.json). Only
+             reliably non-"NA" when AC ran as part of a single combined
+             AmpliconSuite-pipeline.py --run_AA --run_AC invocation, or when
+             make_results_table.py is new enough to backfill them itself.
+          2. The sample's own run_metadata.json, read directly (see
+             _read_run_metadata_versions()) — often populated even when (1)
+             is "NA" (older make_results_table.py releases don't know about
+             newer run_metadata.json key names), and always preserved
+             (MISC_AA_SUFFIXES) regardless of ASA version. Safe to prefer
+             over log scraping here because AA never gets "re-run
+             separately" the way AC classification does — there's no
+             equivalent staleness risk to worry about (see ac_version
+             below).
+
+        ac_version priority is deliberately different — see the inline
+        comment where it's resolved below — because run_metadata.json's own
+        "AC_version" field is a write-once snapshot from AA/pipeline run
+        time that goes stale the moment a cohort gets reclassified with a
+        newer/different AC later (a common real-world workflow), so it
+        must rank below both the row column and the classification-dir log
+        scan (_scan_classification_log_version()), which are always tied to
+        the actual run that produced the result_table.tsv being parsed.
         """
         print(f"  Reading: {rt_path}")
         try:
@@ -926,6 +998,9 @@ class Aggregator:
 
         # Normalise NaN-like values to our sentinel string
         df = df.where(df != "", other=NOT_PROVIDED)
+
+        cls_dir = os.path.dirname(rt_path)
+        log_ac_version: Optional[str] = None  # lazily scanned, at most once per table
 
         # Find the reverse mapping sname -> existing sample_key so we can
         # overwrite on duplicate rather than creating a second key.
@@ -951,6 +1026,134 @@ class Aggregator:
                 counter += 1
             if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                 print(f"    {sname}: {len(rows)} feature row(s)")
+
+            # Look up (don't create) — a sample with a result_table row but
+            # no Stage 3 discovery data gets a stub record later, in
+            # _stage4_parse_result_tables' reconciliation pass, which prints
+            # a warning; creating it here would silently swallow that check.
+            rec = self.sample_registry.get(sname)
+            if rec is not None:
+                if not rec.ac_source_dir:
+                    rec.ac_source_dir = cls_dir
+                row0 = rows[0]
+                meta_aa, meta_paa, meta_ac = self._read_run_metadata_versions(rec)
+
+                row_aa = row0.get("AA version")
+                if not not_provided(row_aa):
+                    rec.aa_version = row_aa
+                elif meta_aa:
+                    rec.aa_version = meta_aa
+
+                row_paa = row0.get("AS-p version")
+                if not not_provided(row_paa):
+                    rec.amplicon_suite_pipeline_version = row_paa
+                elif meta_paa:
+                    rec.amplicon_suite_pipeline_version = meta_paa
+
+                # ac_version priority deliberately differs from aa/pipeline:
+                # both the row column and the classification-dir log scan
+                # are tied to the *same* classification run that produced
+                # this result_table.tsv, so either is trustworthy. But
+                # run_metadata.json's "AC_version" is a write-once snapshot
+                # from AA/pipeline run time — valid only if AC happened to
+                # run inline with that same invocation, which is exactly
+                # when the row column is *also* already correct (redundant
+                # when right). Reclassifying an existing AA cohort with a
+                # newer/different AC later — common, and exactly what
+                # produced e.g. the TCGA_cutoff_passed data — leaves that
+                # JSON field stale, so it must rank below the log scan.
+                row_ac = row0.get("AC version")
+                if not not_provided(row_ac):
+                    rec.ac_version = row_ac
+                else:
+                    if log_ac_version is None:
+                        log_ac_version = self._scan_classification_log_version(cls_dir) or ""
+                    if log_ac_version:
+                        rec.ac_version = log_ac_version
+                    elif meta_ac:
+                        rec.ac_version = meta_ac
+
+    @staticmethod
+    def _scan_classification_log_version(cls_dir: str) -> Optional[str]:
+        """
+        Look directly inside a classification dir (top-level only — this is
+        what keeps bfbarchitect's nested per-amplicon visualization logs,
+        which also end in '.log', out of scope) for AC's own log and scrape
+        its "AmpliconClassifier X.Y.Z" banner line. Used as the AC version
+        fallback when result_table.tsv's own "AC version" column is "NA".
+        """
+        try:
+            entries = sorted(os.listdir(cls_dir))
+        except OSError:
+            return None
+        for fname in entries:
+            if not fname.endswith(".log") or fname.startswith("."):
+                continue
+            fpath = os.path.join(cls_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, errors="ignore") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            _, _, ac_v = extract_tool_versions(text)
+            if ac_v:
+                return ac_v
+        return None
+
+    @staticmethod
+    def _read_run_metadata_versions(
+            rec: SampleRecord) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Read AA/AmpliconSuite-pipeline/AC versions directly out of a
+        sample's own [sname]_run_metadata.json, written by
+        AmpliconSuite-pipeline at AA run time. This is often more reliable
+        than result_table.tsv's own version columns — those depend on
+        make_results_table.py knowing how to read this same file, and older
+        releases don't recognize newer key names or lack AC-version
+        fallback logic entirely — and the JSON itself is always preserved
+        (MISC_AA_SUFFIXES) regardless of ASA version, unlike a log file that
+        may or may not have survived. Mirrors AC's own field-preference
+        order: the newer "AmpliconSuite-pipeline_version" key overrides the
+        older "PAA_version" key when both are present; "AA_version" carries
+        a full "AmpliconArchitect version X" banner string, so only its
+        last whitespace-separated token is kept. "AC_version" is populated
+        here only when AC ran as part of a combined AmpliconSuite-pipeline
+        --run_AC invocation (the same case that populates the result_table
+        columns) — a separately-run AC never rewrites this file, so this
+        field goes stale (keeps whatever AC ran inline at AA-run time, if
+        any) the moment a cohort is later reclassified with a different AC.
+        Callers must treat the returned ac_version as lower-priority than
+        anything tied to the *current* classification run (the row column,
+        or _scan_classification_log_version()) for exactly that reason.
+        Returns (aa_version, pipeline_version, ac_version); any may be None.
+        """
+        if not rec.run_metadata_json:
+            return None, None, None
+        try:
+            with open(rec.run_metadata_json) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            return None, None, None
+
+        aa_v = None
+        raw_aa = meta.get("AA_version")
+        if raw_aa and not not_provided(raw_aa):
+            aa_v = raw_aa.split()[-1]
+
+        pipeline_v = None
+        for key in ("PAA_version", "AmpliconSuite-pipeline_version"):
+            raw = meta.get(key)
+            if raw and not not_provided(raw):
+                pipeline_v = raw
+
+        ac_v = None
+        raw_ac = meta.get("AC_version")
+        if raw_ac and not not_provided(raw_ac):
+            ac_v = raw_ac
+
+        return aa_v, pipeline_v, ac_v
 
     # ==================================================================
     # Stage stubs — implemented in subsequent segments
@@ -1254,6 +1457,9 @@ class Aggregator:
                         if target.get("prefix_output", True) else suffix)
 
             if is_dir:
+                if target.get("compress"):
+                    self._merge_ac_compressed_dir(suffix, out_name + ".tar.gz")
+                    continue
                 out_path = os.path.join(self.classif_dir, out_name)
                 os.makedirs(out_path, exist_ok=True)
                 self._merge_ac_subdirs(suffix, out_path,
@@ -1374,6 +1580,55 @@ class Aggregator:
 
         print(f"  Merged {len(sources)} dir(s) -> {os.path.basename(out_dir)}/ "
               f"({files_copied} file(s))")
+
+    def _merge_ac_compressed_dir(self, suffix: str, archive_name: str) -> None:
+        """
+        Like _merge_ac_subdirs, but emit the merged directory as a single
+        compressed archive_name inside consolidated_classification/ rather
+        than a loose subdirectory. Used for AC's bfbarchitect_outputs/, which
+        can be large.
+
+        Merging happens in a temporary directory named after suffix (so the
+        archive extracts to that dir name), which is tarred and removed.
+        Nothing is emitted if no source subdirs are found.
+
+        On reaggregation the previously emitted archive is auto-expanded by
+        Stage 2's nested-archive pass (and its redundant stem wrapper
+        collapsed by _unwrap_redundant_dir) back into a plain suffix/ dir
+        before discovery, so this merges + recompresses uniformly whether the
+        input arrived raw or already compressed (mirrors how per-sample
+        cnvkit dirs round-trip). The copy below walks recursively and
+        flattens every file regardless of depth — depth-agnostic as a
+        safety net, so the emitted member list stays identical even if a
+        source dir ever carries extra nesting (bfbarchitect_outputs is a flat
+        set of uniquely named files, so flattening loses no structure).
+        """
+        sources = self._find_ac_dirs(suffix)
+        if not sources:
+            return
+
+        tmp_dir = os.path.join(self.classif_dir, suffix)
+        os.makedirs(tmp_dir, exist_ok=True)
+        files_copied = 0
+        for src_dir in sources:
+            try:
+                for root, _, fnames in os.walk(src_dir):
+                    for fname in fnames:
+                        if fname.startswith("."):
+                            continue
+                        src_file = os.path.join(root, fname)
+                        dest_file = self._unique_dest(tmp_dir, fname)
+                        shutil.copy2(src_file, dest_file)
+                        files_copied += 1
+            except OSError as e:
+                print(f"  Warning: could not read subdir {src_dir}: {e}")
+
+        archive_path = os.path.join(self.classif_dir, archive_name)
+        make_tarball(tmp_dir, archive_path, exclusions=())
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        print(f"  Merged {len(sources)} dir(s) -> {archive_name} "
+              f"({files_copied} file(s), compressed)")
 
     def _rescue_amplicon_files(self, file_suffix: str, out_dir: str) -> None:
         """
@@ -1818,12 +2073,14 @@ class Aggregator:
         # ── Reconstruction tool ──────────────────────────────────────────
         row["Reconstruction tool"] = rec.reconstruction_tool if rec else NOT_PROVIDED
 
-        # ── AA / AmpliconSuite-pipeline versions ─────────────────────────
+        # ── AA / AmpliconSuite-pipeline / AC versions ────────────────────
         row["AmpliconArchitect version"] = (
             rec.aa_version if rec and rec.aa_version else NOT_PROVIDED)
         row["AmpliconSuite-pipeline version"] = (
             rec.amplicon_suite_pipeline_version
             if rec and rec.amplicon_suite_pipeline_version else NOT_PROVIDED)
+        row["AmpliconClassifier version"] = (
+            rec.ac_version if rec and rec.ac_version else NOT_PROVIDED)
 
         # ── Reconstruction directory ─────────────────────────────────────
         if rec and rec.aa_dir_dest and os.path.isdir(rec.aa_dir_dest):

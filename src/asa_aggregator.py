@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "7.2.0"
+__version__ = "7.3.0"
 
 # ---------------------------------------------------------------------------
 # Constants

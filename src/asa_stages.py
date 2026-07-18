@@ -640,21 +640,29 @@ class Aggregator:
         if not rec.cnv_calls_bed:
             # CoRAL has no AmpliconSuite-pipeline wrapper, so nothing runs
             # cnvkit's raw .cns segments through the CNV_CALLS.bed
-            # conversion step AA's pipeline does — recover it from the
-            # plain (non-.call, non-.bintest) .cns file if present.
-            plain_cns = next(
+            # conversion step AA's pipeline does — recover it from a .cns
+            # file if present. Prefer a plain (non-.call, non-.bintest) .cns,
+            # whose log2 is the raw ratio; fall back to a .call.cns (cnvkit's
+            # `call` output) when that's all a sample has. Both keep log2 at
+            # the same column, so convert_cnvkit_cns_to_bed handles either.
+            # .bintest.cns is bin-level test output, not segments — never used.
+            cns_file = next(
                 (f for f in entries if f.endswith(".cns")
                  and not f.endswith(".call.cns") and not f.endswith(".bintest.cns")),
                 None)
-            if plain_cns:
+            if not cns_file:
+                cns_file = next(
+                    (f for f in entries if f.endswith(".call.cns")),
+                    None)
+            if cns_file:
                 dest = os.path.join(dpath, f"{sname}_CNV_CALLS.bed")
                 try:
-                    convert_cnvkit_cns_to_bed(os.path.join(dpath, plain_cns), dest)
+                    convert_cnvkit_cns_to_bed(os.path.join(dpath, cns_file), dest)
                     rec.cnv_calls_bed = dest
-                    print(f"  Generated CNV_CALLS.bed for '{sname}' from {plain_cns} "
+                    print(f"  Generated CNV_CALLS.bed for '{sname}' from {cns_file} "
                           f"(no CNV_CALLS.bed found in cnvkit dir)")
                 except (OSError, ValueError, IndexError) as e:
-                    print(f"  Warning: failed to convert {plain_cns} to "
+                    print(f"  Warning: failed to convert {cns_file} to "
                           f"CNV_CALLS.bed for '{sname}': {e}")
 
     def _register_amplicon_file(self, fname: str, fpath: str,

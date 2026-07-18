@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "7.3.0"
+__version__ = "7.4.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -493,12 +493,19 @@ def make_tarball(source_dir: str, dest_tar_path: str,
 
 def convert_cnvkit_cns_to_bed(cns_path: str, dest_path: str, min_cn: float = 0.0) -> None:
     """
-    Convert a plain CNVkit .cns segment file (not .call.cns/.bintest.cns)
-    into a CNV_CALLS.bed, recovering absolute copy number from the log2
-    ratio column. Mirrors PrepareAA/scripts/convert_cns_to_bed.py's
-    conversion formula (2**(log2_ratio + 1)) — used as a fallback for
-    tools like CoRAL that produce raw cnvkit segments but, unlike
-    AmpliconSuite-pipeline, never run this conversion step themselves.
+    Convert a CNVkit .cns segment file into a CNV_CALLS.bed, recovering
+    absolute copy number from the log2 ratio column. Mirrors
+    PrepareAA/scripts/convert_cns_to_bed.py's conversion formula
+    (2**(log2_ratio + 1)) — used as a fallback for tools like CoRAL that
+    produce raw cnvkit segments but, unlike AmpliconSuite-pipeline, never
+    run this conversion step themselves.
+
+    Works on both a plain .cns and a .call.cns: cnvkit's `call` inserts an
+    integer `cn` column but leaves `log2` at column index 4, so the same
+    log2-based formula applies. We intentionally read log2 rather than the
+    .call.cns `cn` column, to keep CNs consistent with the plain-.cns path
+    (fractional CNs, not rounded integers). .bintest.cns (bin-level test
+    output, not segments) is never passed here.
     """
     with open(cns_path) as infile, open(dest_path, "w") as outfile:
         next(infile)  # header

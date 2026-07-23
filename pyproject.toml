@@ -1,13 +1,13 @@
 [project]
 name = "AmpliconSuiteAggregator"
-version = "7.4.0"
+version = "8.0.0"
 authors = [
   { name="Thorin Tabor" },
   { name = "Jens Luebeck", email="jluebeck@ucsd.edu" },
 ]
 description = "Aggregator tool for multiple Amplicon Architect outputs"
 readme = "README.md"
-requires-python = ">3.7"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

@@ -9,6 +9,8 @@ and produces a single structured archive ready for upload to AmpliconRepository.
 Authors: Jens Luebeck et al.
 """
 
+from __future__ import annotations  # keeps list[]/dict[] annotations from being evaluated at import time
+
 import argparse
 import sys
 import os

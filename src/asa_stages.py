@@ -20,6 +20,7 @@ import io
 import json
 import time
 import os
+import posixpath
 import shutil
 import sys
 import tarfile
@@ -45,6 +46,7 @@ from asa_aggregator import (
     is_aa_summary_content, is_coral_summary_content,
     make_tarball, safe_copy_file, safe_copytree, relative_to_results,
     convert_cnvkit_cns_to_bed, extract_tool_versions, compress_reconstruct_logs,
+    gzip_files_in_dir,
 )
 
 from asa_aggregator import __version__
@@ -119,6 +121,15 @@ class Aggregator:
         self._floating_cnv_beds:  Dict[str, str] = {}
         self._classification_result_tables: Dict[str, str] = {}
         self.superseded_classification_dirs: List[str] = []
+        # Memoised AC-version lookups. Both are pure functions of a path, and
+        # both were being recomputed several times per classification dir:
+        # _sniff_ac_version_for_generation is called once for ranking and
+        # again for every log message that describes a generation, and the
+        # log scan underneath it re-reads AC's whole log each time. Only the
+        # tiny derived strings are cached — never the parsed result tables,
+        # which are far too large to hold for a big cohort.
+        self._ac_version_cache: Dict[str, Optional[str]] = {}
+        self._cls_log_version_cache: Dict[str, Optional[str]] = {}
 
         self._run_pipeline()
 
@@ -249,17 +260,19 @@ class Aggregator:
         try:
             if archive_path.endswith(".zip"):
                 with zipfile.ZipFile(archive_path, "r") as zf:
-                    members = [m for m in zf.namelist()
-                               if not m.startswith("__MACOSX")
-                               and not any(part not in (".", "..") and part.startswith(".")
-                                           for part in m.split("/") if part)]
-                    zf.extractall(dest, members=members)
+                    keep = self._filter_members(zf.namelist(), archive_path)
+                    zf.extractall(dest, members=sorted(keep))
             else:
                 with tarfile.open(archive_path, "r:*") as tf:
-                    members = [m for m in tf.getmembers()
-                               if not m.name.startswith("__MACOSX")
-                               and not any(part not in (".", "..") and part.startswith(".")
-                                           for part in m.name.split("/") if part)]
+                    all_members = tf.getmembers()
+                    keep = self._filter_members([m.name for m in all_members],
+                                                archive_path)
+                    # A link whose *target* escapes is unsafe even when its own
+                    # name is fine — a later member could be written through it.
+                    members = [m for m in all_members
+                               if m.name in keep
+                               and not ((m.issym() or m.islnk())
+                                        and self._is_unsafe_member(m.linkname))]
                     tf.extractall(dest, members=members)
             dest = self._unwrap_redundant_dir(dest, dest_parent, stem)
             print(f"  Extracted: {archive_path} -> {dest}")
@@ -269,6 +282,78 @@ class Aggregator:
             if os.path.exists(dest) and not os.listdir(dest):
                 shutil.rmtree(dest, ignore_errors=True)
             return None
+
+    @staticmethod
+    def _is_ignored_member(name: str) -> bool:
+        """
+        Routine, expected exclusions: macOS artifacts and hidden files/dirs.
+        Discovery ignores these anyway, so they are dropped silently — this
+        is long-standing behaviour, not a safety check.
+        """
+        if not name:
+            return True
+        if name.startswith("__MACOSX"):
+            return True
+        for part in name.replace("\\", "/").split("/"):
+            if part in ("", ".", ".."):
+                continue
+            if part.startswith("."):
+                return True
+        return False
+
+    @staticmethod
+    def _is_unsafe_member(name: str) -> bool:
+        """
+        True if extracting this member would write *outside* the extraction
+        directory — the tar/zip path-traversal escape (CVE-2007-4559, "Zip
+        Slip"). We ingest arbitrary user-supplied archives, and an
+        unfiltered extractall lets a crafted one overwrite anything the
+        process can write (note os.path.join(dest, "/etc/passwd") is just
+        "/etc/passwd", so absolute member names escape too).
+
+        Containment is decided by *normalising* the path, not by banning the
+        '..' token: "foo/../bar/file" resolves to "bar/file", stays inside
+        the tree, and is therefore allowed. Only a path that still escapes
+        after normalisation ("../evil", "a/../../evil", "/etc/passwd") is
+        rejected. This keeps unconventionally-built-but-benign archives
+        working while still closing the hole.
+
+        tarfile's filter='data' does this natively from Python 3.12; we
+        support 3.9+, so it is enforced here for both tar and zip. Callers
+        pass symlink/hardlink targets through this too, so a link cannot
+        point out of the tree and have a later member written through it.
+        """
+        if not name:
+            return False
+        normalized = name.replace("\\", "/")
+        if normalized.startswith("/") or (len(normalized) > 1
+                                          and normalized[1] == ":"):
+            return True
+        resolved = posixpath.normpath(normalized)
+        return resolved == ".." or resolved.startswith("../")
+
+    def _filter_members(self, names: List[str], archive_path: str) -> set:
+        """
+        Partition member names into those to extract and those to drop.
+        Returns the set of names to keep.
+
+        Unsafe (escaping) members are reported loudly: silently discarding
+        input is exactly the failure mode that makes a security filter
+        dangerous to add, so if this ever fires on a real archive the user
+        finds out rather than quietly getting an incomplete aggregation.
+        """
+        unsafe = [n for n in names if self._is_unsafe_member(n)]
+        if unsafe:
+            print(f"  Warning: {len(unsafe)} member(s) of {archive_path} "
+                  f"would extract outside the destination directory and were "
+                  f"SKIPPED (possible path-traversal or absolute paths):")
+            for n in unsafe[:5]:
+                print(f"    {n}")
+            if len(unsafe) > 5:
+                print(f"    ... and {len(unsafe) - 5} more")
+        unsafe_set = set(unsafe)
+        return {n for n in names
+                if n not in unsafe_set and not self._is_ignored_member(n)}
 
     def _unwrap_redundant_dir(self, dest: str, dest_parent: str,
                               stem: str) -> str:
@@ -432,8 +517,15 @@ class Aggregator:
                             sname = fname[:-len(".run.log")]
                         else:
                             sname = fname[:-4]
-                        sibling_aa = os.path.join(root, f"{sname}_AA_results")
-                        if os.path.isdir(sibling_aa):
+                        # Accept our own output-side naming as well as
+                        # AmpliconSuite-pipeline's: on reaggregation the
+                        # sibling is [sname]_reconstruction_results/, so
+                        # matching only _AA_results silently dropped
+                        # [sname].log (and with it the AmpliconArchitect
+                        # version banner) on every round-trip.
+                        if any(os.path.isdir(os.path.join(root, f"{sname}{sfx}"))
+                               for sfx in ("_AA_results",
+                                           "_reconstruction_results")):
                             rec = self._get_or_create_record(sname)
                             if not rec.pipeline_log:
                                 rec.pipeline_log = fpath
@@ -620,7 +712,43 @@ class Aggregator:
         if ac_v and not rec.ac_version:
             rec.ac_version = ac_v
 
+    @staticmethod
+    def _descend_redundant_cnvkit_dir(dpath: str) -> str:
+        """
+        Collapse a cnvkit dir that wraps nothing but another cnvkit dir.
+
+        Aggregated output from before 8.0.0 rooted [sname]_cnvkit_output.tar.gz
+        at whatever the *source* dir was called. For CoRAL that is the bare
+        'cnvkit_output/', so re-extracting such an archive yields
+        [sname]_cnvkit_output/cnvkit_output/<files> — a level of nesting that
+        _unwrap_redundant_dir cannot remove, because its name == stem gate
+        only matches the AA shape ([sname]_cnvkit_output/[sname]_cnvkit_output/).
+
+        Rather than move files around on disk, just point discovery at the
+        real inner dir; Stage 5 then re-emits it rooted at the canonical
+        [sname]_cnvkit_output/, which heals the layout in a single pass.
+        Loops so arbitrarily deep legacy nesting flattens in one go.
+        """
+        seen = set()
+        while dpath not in seen:
+            seen.add(dpath)
+            try:
+                entries = [e for e in os.listdir(dpath) if not e.startswith(".")]
+            except OSError:
+                return dpath
+            if len(entries) != 1:
+                return dpath
+            inner = os.path.join(dpath, entries[0])
+            if not os.path.isdir(inner):
+                return dpath
+            if not (entries[0] in ("cnvkit_output", "cnvkit_outputs")
+                    or entries[0].endswith(("_cnvkit_output", "_cnvkit_outputs"))):
+                return dpath
+            dpath = inner
+        return dpath
+
     def _register_cnvkit_dir(self, sname: str, dpath: str) -> None:
+        dpath = self._descend_redundant_cnvkit_dir(dpath)
         rec = self._get_or_create_record(sname)
         if rec.cnvkit_dir:
             print(f"  Warning: duplicate cnvkit dir for '{sname}', "
@@ -640,29 +768,23 @@ class Aggregator:
         if not rec.cnv_calls_bed:
             # CoRAL has no AmpliconSuite-pipeline wrapper, so nothing runs
             # cnvkit's raw .cns segments through the CNV_CALLS.bed
-            # conversion step AA's pipeline does — recover it from a .cns
-            # file if present. Prefer a plain (non-.call, non-.bintest) .cns,
-            # whose log2 is the raw ratio; fall back to a .call.cns (cnvkit's
-            # `call` output) when that's all a sample has. Both keep log2 at
-            # the same column, so convert_cnvkit_cns_to_bed handles either.
-            # .bintest.cns is bin-level test output, not segments — never used.
-            cns_file = next(
+            # conversion step AA's pipeline does — recover it from the
+            # plain (non-.call, non-.bintest) .cns file if present. We only
+            # use the plain .cns: .call.cns is a poor source of CNV calls,
+            # and .bintest.cns is bin-level test output, not segments.
+            plain_cns = next(
                 (f for f in entries if f.endswith(".cns")
                  and not f.endswith(".call.cns") and not f.endswith(".bintest.cns")),
                 None)
-            if not cns_file:
-                cns_file = next(
-                    (f for f in entries if f.endswith(".call.cns")),
-                    None)
-            if cns_file:
+            if plain_cns:
                 dest = os.path.join(dpath, f"{sname}_CNV_CALLS.bed")
                 try:
-                    convert_cnvkit_cns_to_bed(os.path.join(dpath, cns_file), dest)
+                    convert_cnvkit_cns_to_bed(os.path.join(dpath, plain_cns), dest)
                     rec.cnv_calls_bed = dest
-                    print(f"  Generated CNV_CALLS.bed for '{sname}' from {cns_file} "
+                    print(f"  Generated CNV_CALLS.bed for '{sname}' from {plain_cns} "
                           f"(no CNV_CALLS.bed found in cnvkit dir)")
                 except (OSError, ValueError, IndexError) as e:
-                    print(f"  Warning: failed to convert {cns_file} to "
+                    print(f"  Warning: failed to convert {plain_cns} to "
                           f"CNV_CALLS.bed for '{sname}': {e}")
 
     def _register_amplicon_file(self, fname: str, fpath: str,
@@ -1007,7 +1129,17 @@ class Aggregator:
         and non-NA, else scraped from the dir's own AC log. None if
         neither source has it — the pre-AC-2.0 schema this whole check
         exists to rank below any dir that does.
+
+        Memoised: called once per dir for ranking and again for each
+        describe-this-generation log line.
         """
+        if rt_path in self._ac_version_cache:
+            return self._ac_version_cache[rt_path]
+        result = self._sniff_ac_version_uncached(rt_path)
+        self._ac_version_cache[rt_path] = result
+        return result
+
+    def _sniff_ac_version_uncached(self, rt_path: str) -> Optional[str]:
         try:
             header = pd.read_csv(rt_path, sep="\t", nrows=0).columns
         except Exception:
@@ -1269,15 +1401,25 @@ class Aggregator:
                     elif meta_ac:
                         rec.ac_version = meta_ac
 
-    @staticmethod
-    def _scan_classification_log_version(cls_dir: str) -> Optional[str]:
+    def _scan_classification_log_version(self, cls_dir: str) -> Optional[str]:
         """
         Look directly inside a classification dir (top-level only — this is
         what keeps bfbarchitect's nested per-amplicon visualization logs,
         which also end in '.log', out of scope) for AC's own log and scrape
         its "AmpliconClassifier X.Y.Z" banner line. Used as the AC version
         fallback when result_table.tsv's own "AC version" column is "NA".
+
+        Memoised per directory — AC logs can be large and this is reached
+        from both generation ranking and per-sample version resolution.
         """
+        if cls_dir in self._cls_log_version_cache:
+            return self._cls_log_version_cache[cls_dir]
+        result = self._scan_classification_log_version_uncached(cls_dir)
+        self._cls_log_version_cache[cls_dir] = result
+        return result
+
+    @staticmethod
+    def _scan_classification_log_version_uncached(cls_dir: str) -> Optional[str]:
         try:
             entries = sorted(os.listdir(cls_dir))
         except OSError:
@@ -1382,11 +1524,16 @@ class Aggregator:
               [project_name]_classification_bed_files/
               [project_name]_ecDNA_context_calls.tsv
               [project_name]_ecDNA_counts.tsv
+              [project_name]_fan_calls.tsv              (AC2+)
               [project_name]_feature_basic_properties.tsv
-              [project_name]_feature_entropy.tsv
+              [project_name]_feature_complexity.tsv     (AC2+; pre-AC2: _feature_entropy.tsv)
+              [project_name]_feature_similarity_scores.tsv  (AC2+)
               [project_name]_gene_list.tsv
+              [project_name]_lncRNA_list.tsv            (AC2+)
               [project_name]_result_table.tsv
+              [project_name].log                        (AC's own log; source of ac_version)
               [project_name]_SV_summaries/
+              bfbarchitect_outputs.tar.gz               (AC2+; unprefixed, compressed)
 
           results/other_files/
               [AUX dir contents copied here]
@@ -1597,9 +1744,14 @@ class Aggregator:
 
         if rec.cnvkit_dir and os.path.isdir(rec.cnvkit_dir):
             # Compress .cns files in place before tarring, consistent with
-            # the old aggregator behaviour.
-            self._gzip_files_in_dir(rec.cnvkit_dir, ".cns")
-            make_tarball(rec.cnvkit_dir, tar_dest)
+            # the old aggregator behaviour. Note this also gzips .call.cns,
+            # which EXCLUSION_SUFFIXES then drops from the tarball entirely.
+            gzip_files_in_dir(rec.cnvkit_dir, ".cns")
+            # Always root the archive at the canonical [sname]_cnvkit_output/,
+            # never at the source basename — CoRAL's is bare 'cnvkit_output/',
+            # which is what made this tarball non-idempotent before 8.0.0.
+            make_tarball(rec.cnvkit_dir, tar_dest,
+                         root_name=f"{sname}_cnvkit_output")
             return tar_dest
 
         print(f"  Warning: no cnvkit dir found for '{sname}' — cnvkit directory: Not Provided")
@@ -1618,18 +1770,6 @@ class Aggregator:
         dest = os.path.join(sample_out, f"{sname}_CNV_CALLS.bed")
         safe_copy_file(rec.cnv_calls_bed, dest)
         return dest
-
-    @staticmethod
-    def _gzip_files_in_dir(dirpath: str, suffix: str) -> None:
-        """gzip all files with the given suffix inside dirpath (in-place)."""
-        import subprocess
-        try:
-            for fname in os.listdir(dirpath):
-                if fname.endswith(suffix) and not fname.endswith(suffix + ".gz"):
-                    fpath = os.path.join(dirpath, fname)
-                    subprocess.call(["gzip", "-fq", fpath])
-        except OSError:
-            pass
 
     # ------------------------------------------------------------------
     # Stage 5b — consolidated classification
@@ -1867,8 +2007,10 @@ class Aggregator:
     def _find_ac_files(self, suffix: str) -> List[str]:
         """
         Return sorted list of file paths ending with suffix found directly
-        inside any known classification dir (not recursing into subdirs).
-        Also searches the full classif_dir tree to catch files at any depth.
+        inside any known classification dir. Top level only — subdirs are
+        not recursed into, which is what keeps nested per-amplicon artifacts
+        (e.g. bfbarchitect's *_BFB_visualization.log) out of the '.log'
+        merge target.
         """
         found = []
         seen = set()
@@ -2106,7 +2248,12 @@ class Aggregator:
         processed = 0
 
         for skey, rows in self.run_json_groups.items():
-            for row in rows:
+            # enumerate (rather than looking the row back up by value) because
+            # two feature rows in one sample can compare equal: list.index()
+            # would then return the first match every time, rewriting that one
+            # twice and leaving its twin without canonical column ordering.
+            # It is also O(n) per row, i.e. O(n^2) per sample.
+            for row_idx, row in enumerate(rows):
                 processed += 1
                 sname = str(row["Sample name"])  # guard against numeric sample names
                 row["Sample name"] = sname
@@ -2157,8 +2304,7 @@ class Aggregator:
                 ordered = {}
                 for col in RUN_JSON_COLUMNS:
                     ordered[col] = row.get(col, NOT_PROVIDED)
-                self.run_json_groups[skey][
-                    self.run_json_groups[skey].index(row)] = ordered
+                rows[row_idx] = ordered  # `rows` is self.run_json_groups[skey]
 
                 if processed % 100 == 0:
                     print(f"  Processed {processed} feature rows...")
@@ -2330,7 +2476,7 @@ class Aggregator:
                             attr: str, sname: str, suffix: str) -> str:
         """
         Resolve a miscellaneous file (metadata JSON, etc.) that was copied
-        placed into the sample dir by Stage 5.
+        into the sample dir by Stage 5.
         Falls back to checking the sample dir directly by expected filename.
         Returns a results-relative path, or NOT_PROVIDED.
         """

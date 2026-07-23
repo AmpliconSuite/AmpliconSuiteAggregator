@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "7.4.0"
+__version__ = "8.0.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -472,40 +472,44 @@ def is_classification_dir(dirpath: str) -> Tuple[bool, Optional[str], Optional[s
 
 
 def make_tarball(source_dir: str, dest_tar_path: str,
-                 exclusions: Tuple[str, ...] = EXCLUSION_SUFFIXES) -> None:
+                 exclusions: Tuple[str, ...] = EXCLUSION_SUFFIXES,
+                 root_name: Optional[str] = None) -> None:
     """
     Create a .tar.gz archive of source_dir at dest_tar_path.
     Files matching any suffix in exclusions are omitted.
-    The archive is rooted at the basename of source_dir (i.e. extracting
-    produces [basename]/ not a full absolute path tree).
+
+    The archive is rooted at root_name if given, else at the basename of
+    source_dir (i.e. extracting produces [root]/ not a full absolute path
+    tree). Pass root_name when the *output* name is canonical and must not
+    inherit whatever the source directory happened to be called — e.g. a
+    CoRAL cnvkit dir is named bare 'cnvkit_output/', but the emitted
+    archive must always be rooted at '[sname]_cnvkit_output/' so that a
+    reaggregation of our own output round-trips identically.
     """
-    parent = os.path.dirname(source_dir)
+    root = root_name or os.path.basename(source_dir.rstrip("/"))
     with tarfile.open(dest_tar_path, "w:gz") as tar:
-        for root, dirs, files in os.walk(source_dir):
+        for root_dir, dirs, files in os.walk(source_dir):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__MACOSX"]
             for fname in files:
                 if fname.startswith(".") or any(fname.endswith(excl) for excl in exclusions):
                     continue
-                fpath = os.path.join(root, fname)
-                arcname = os.path.relpath(fpath, parent)
+                fpath = os.path.join(root_dir, fname)
+                arcname = os.path.join(
+                    root, os.path.relpath(fpath, source_dir))
                 tar.add(fpath, arcname=arcname)
 
 
 def convert_cnvkit_cns_to_bed(cns_path: str, dest_path: str, min_cn: float = 0.0) -> None:
     """
-    Convert a CNVkit .cns segment file into a CNV_CALLS.bed, recovering
-    absolute copy number from the log2 ratio column. Mirrors
-    PrepareAA/scripts/convert_cns_to_bed.py's conversion formula
-    (2**(log2_ratio + 1)) — used as a fallback for tools like CoRAL that
-    produce raw cnvkit segments but, unlike AmpliconSuite-pipeline, never
-    run this conversion step themselves.
+    Convert a plain CNVkit .cns segment file (not .call.cns/.bintest.cns)
+    into a CNV_CALLS.bed, recovering absolute copy number from the log2
+    ratio column. Mirrors PrepareAA/scripts/convert_cns_to_bed.py's
+    conversion formula (2**(log2_ratio + 1)) — used as a fallback for
+    tools like CoRAL that produce raw cnvkit segments but, unlike
+    AmpliconSuite-pipeline, never run this conversion step themselves.
 
-    Works on both a plain .cns and a .call.cns: cnvkit's `call` inserts an
-    integer `cn` column but leaves `log2` at column index 4, so the same
-    log2-based formula applies. We intentionally read log2 rather than the
-    .call.cns `cn` column, to keep CNs consistent with the plain-.cns path
-    (fractional CNs, not rounded integers). .bintest.cns (bin-level test
-    output, not segments) is never passed here.
+    Only a plain .cns is passed here: .call.cns is a poor source of CNV
+    calls, and .bintest.cns is bin-level test output, not segments.
     """
     with open(cns_path) as infile, open(dest_path, "w") as outfile:
         next(infile)  # header
@@ -563,6 +567,47 @@ def safe_copytree(src: str, dest: str,
         return False
 
 
+def gzip_file_in_place(fpath: str) -> bool:
+    """
+    Gzip a single file in place: write <fpath>.gz, then remove the original
+    (an existing .gz is overwritten, mirroring `gzip -f`). Returns True on
+    success, False on failure.
+
+    Uses the stdlib gzip module rather than shelling out to the gzip(1)
+    binary so behaviour is identical wherever the package runs — including
+    slim containers with no gzip installed, where a subprocess call fails
+    with FileNotFoundError and, if that is swallowed, silently skips the
+    compression entirely.
+    """
+    gz_path = fpath + ".gz"
+    try:
+        with open(fpath, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        os.remove(fpath)
+        return True
+    except OSError as e:
+        print(f"Warning: could not compress {fpath}: {e}")
+        return False
+
+
+def gzip_files_in_dir(dirpath: str, suffix: str) -> None:
+    """
+    Gzip every file directly inside dirpath whose name ends with suffix
+    (non-recursive, in place). Files already ending in suffix + '.gz' are
+    skipped, so this is safe to re-run.
+    """
+    try:
+        entries = os.listdir(dirpath)
+    except OSError:
+        return
+    for fname in entries:
+        if not fname.endswith(suffix) or fname.endswith(suffix + ".gz"):
+            continue
+        fpath = os.path.join(dirpath, fname)
+        if os.path.isfile(fpath):
+            gzip_file_in_place(fpath)
+
+
 def compress_reconstruct_logs(dest_dir: str) -> None:
     """
     Gzip-compress any CoRAL *_reconstruct.log file sitting directly inside
@@ -571,23 +616,7 @@ def compress_reconstruct_logs(dest_dir: str) -> None:
     .log.gz and won't match RECONSTRUCT_LOG_SUFFIX, so this is naturally
     idempotent on reaggregation without needing to track what it already did.
     """
-    try:
-        entries = os.listdir(dest_dir)
-    except OSError:
-        return
-    for fname in entries:
-        if not fname.endswith(RECONSTRUCT_LOG_SUFFIX):
-            continue
-        fpath = os.path.join(dest_dir, fname)
-        if not os.path.isfile(fpath):
-            continue
-        gz_path = fpath + ".gz"
-        try:
-            with open(fpath, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-            os.remove(fpath)
-        except OSError as e:
-            print(f"Warning: could not compress {fpath}: {e}")
+    gzip_files_in_dir(dest_dir, RECONSTRUCT_LOG_SUFFIX)
 
 
 def relative_to_results(abs_path: str, results_dir: str) -> str:

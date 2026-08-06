@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "8.0.0"
+__version__ = "8.1.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -244,6 +244,12 @@ EXTRACTION_DIR = "extracted_from_zips"
 
 # Name of the staging results directory
 RESULTS_DIR = "results"
+
+# Subdirectory of the extraction tree where synthetic [sname]_cnvkit_output/
+# dirs are staged for samples whose .cns arrived loose rather than inside a
+# cnvkit dir. Created after Stage 3's walk finishes, so it is never itself
+# walked; the leading underscore keeps it out of sample-name space.
+RECOVERED_CNVKIT_DIR = "_recovered_cnvkit"
 
 # ---------------------------------------------------------------------------
 # Data structures

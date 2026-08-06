@@ -36,7 +36,7 @@ from asa_aggregator import (
     LEGACY_CNV_BED_SUFFIX, AMPLICON_FILE_EXT_MAP, CORAL_HEADER_PREFIX,
     AMPLICON_FILE_DISCOVERY_SUFFIXES,
     AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
-    NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR,
+    NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR, RECOVERED_CNVKIT_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
     # data structures
     SampleRecord,
@@ -78,6 +78,10 @@ class Aggregator:
       aux_dirs          — [ dirpath ]                 (populated by Stage 3)
       _files_dirs       — { cls_dir -> files_subdir } (populated by Stage 3)
       _floating_cnv_beds — { sname -> path }          (populated by Stage 3)
+      _stray_cns        — [ (sname_or_None, fname, path) ] (populated by Stage 3;
+                            plain .cns segment files found outside any cnvkit dir,
+                            adopted into a synthetic cnvkit dir by
+                            _adopt_stray_cns_files(), which resolves the name)
       _classification_result_tables — { cls_dir -> result_table_path } (populated by Stage 3)
       superseded_classification_dirs — [ dirpath ]    (populated by _resolve_ac_generations();
                             dirs excluded as an older/superseded AC reclassification generation)
@@ -119,6 +123,7 @@ class Aggregator:
         self.aux_dirs:            List[str] = []
         self._files_dirs:         Dict[str, str] = {}
         self._floating_cnv_beds:  Dict[str, str] = {}
+        self._stray_cns:          List[Tuple[Optional[str], str, str]] = []
         self._classification_result_tables: Dict[str, str] = {}
         self.superseded_classification_dirs: List[str] = []
         # Memoised AC-version lookups. Both are pure functions of a path, and
@@ -423,6 +428,7 @@ class Aggregator:
         print("\n--- Stage 3: Discovery ---")
         self._files_dirs = {}
         self._floating_cnv_beds = {}
+        self._stray_cns = []
 
         for root, dirs, files in os.walk(self.extract_dir, topdown=True):
             dirs[:] = [d for d in dirs
@@ -543,6 +549,10 @@ class Aggregator:
                                 if len(self.sample_registry) <= self.VERBOSE_THRESHOLD:
                                     print(f"  Floating CNV : {sname} -> {fpath}")
 
+                    # A .cns loose in the tree (recognised cnvkit dirs are
+                    # pruned in 3a, so anything reaching here is outside one)
+                    self._register_stray_cns(fname, fpath)
+
         # 3b-ii. Scan AC files/ subdirs for CNV bed files, summary files, and
         # per-amplicon files. This is what makes classification-time copies
         # of graph/cycles/plot files (AC's files/ directory) populate the
@@ -573,6 +583,10 @@ class Aggregator:
             rec = self._get_or_create_record(sname)
             if not rec.cnv_calls_bed:
                 rec.cnv_calls_bed = bed_path
+
+        # 3d. Adopt loose .cns files into synthetic cnvkit dirs (must run
+        # after the walk so a real cnvkit dir anywhere in the tree wins)
+        self._adopt_stray_cns_files()
 
         n_samples = len(self.sample_registry)
         print(f"  Discovery complete: {n_samples} sample(s) inferred, "
@@ -630,6 +644,10 @@ class Aggregator:
                 if self._register_amplicon_file(fname, fpath):
                     continue
 
+                # A .cns copied in flat alongside them
+                if self._register_stray_cns(fname, fpath):
+                    continue
+
                 # CNV BED files (no parent-dir fallback — we're inside a classification dir)
                 if fname.endswith("_CNV_CALLS.bed") or fname.endswith(LEGACY_CNV_BED_SUFFIX):
                     sname = self._cnv_bed_sample_name(
@@ -678,6 +696,11 @@ class Aggregator:
                         and fname.startswith(sname)
                         and not rec.cnv_calls_unfiltered_gains_bed):
                     rec.cnv_calls_unfiltered_gains_bed = fpath
+                    continue
+                # CoRAL drops [sname].cns straight in here rather than in a
+                # cnvkit dir — adopted after the walk, see
+                # _adopt_stray_cns_files().
+                if self._register_stray_cns(fname, fpath, sname=sname):
                     continue
                 self._register_amplicon_file(fname, fpath, sname=sname)
         except OSError as e:
@@ -827,6 +850,113 @@ class Aggregator:
                     self._detect_tool_from_amplicon_txt(rec, fpath, key)
             break
         return True
+
+    def _register_stray_cns(self, fname: str, fpath: str,
+                             sname: Optional[str] = None) -> bool:
+        """
+        Note a plain CNVkit .cns segment file that is *not* sitting inside a
+        recognised cnvkit dir, for later adoption by
+        _adopt_stray_cns_files(). Only the plain .cns is of interest —
+        .call.cns is a poor source of CNV calls and .bintest.cns is
+        bin-level test output, matching _register_cnvkit_dir()'s own choice.
+
+        Returns True if fname was a .cns at all, so callers can stop trying
+        other matchers for this file (mirrors _register_amplicon_file()).
+        """
+        if not fname.endswith(".cns"):
+            return False
+        if fname.endswith(".call.cns") or fname.endswith(".bintest.cns"):
+            return True
+        # Sample-name resolution is deferred to _adopt_stray_cns_files():
+        # the filename alone is not enough (see .cs.rmdup below), and the
+        # registry it has to be matched against is not complete until the
+        # walk finishes.
+        self._stray_cns.append((sname, fname, fpath))
+        return True
+
+    @staticmethod
+    def _cns_sample_name(fname: str, parent_dir_name: str = "",
+                          known_snames: Optional[set] = None) -> str:
+        """
+        Derive a sample name from a .cns filename, mirroring
+        _cnv_bed_sample_name()'s handling of AmpliconSuite-pipeline's
+        `.cs.rmdup` infix:
+
+          [sname].cns                  -> sname
+          [sname].cs.rmdup.cns         -> sname
+          [instr_id].cs.rmdup.cns      -> parent_dir_name, when instr_id is
+                                          not itself a known sample
+        """
+        prefix = rchop(fname, ".cns")
+        CS_RMDUP = ".cs.rmdup"
+        has_cs_rmdup = prefix.endswith(CS_RMDUP)
+        candidate = prefix[:-len(CS_RMDUP)] if has_cs_rmdup else prefix
+        if known_snames and candidate in known_snames:
+            return candidate
+        if has_cs_rmdup and parent_dir_name:
+            return parent_dir_name
+        return candidate
+
+    def _adopt_stray_cns_files(self) -> None:
+        """
+        Adopt loose .cns files into a synthetic [sname]_cnvkit_output/ dir so
+        that a package whose CNVkit output did not arrive in a cnvkit dir
+        still produces the canonical per-sample schema — an
+        [sname]_cnvkit_output.tar.gz plus a recovered [sname]_CNV_CALLS.bed —
+        instead of "Not Provided" for both, and instead of the .cns being
+        dropped entirely (it is not in AA_DIR_INCLUDE_SUFFIXES, so it is not
+        carried through as part of the reconstruction results dir either).
+
+        CoRAL is the motivating case: with no AmpliconSuite-pipeline wrapper
+        to impose a layout, it writes [sname].cns straight into the sample's
+        results dir. Adoption is deferred until the walk has finished because
+        a real cnvkit dir found anywhere else for the same sample must win,
+        and that is not known until then.
+
+        The .cns is hardlinked when the filesystem allows, so adoption costs
+        no extra space and leaves the original untouched when Stage 5 gzips
+        the staged copy in place. Everything downstream — the .cns → BED
+        conversion, gzipping, tarball rooting — then runs through exactly the
+        same _register_cnvkit_dir()/Stage 5 path as a real cnvkit dir.
+
+        Adoption only ever fills a gap for a sample that already exists in the
+        registry; it never invents one. A loose .cns whose name resolves to
+        nothing known is left alone, since the alternative is a phantom sample
+        conjured out of a stray file. Names are resolved with the same
+        .cs.rmdup-aware logic as CNV beds (_cnv_bed_sample_name) — AS-p writes
+        [sname].cs.rmdup.cns, so a plain rchop(".cns") would miss the sample it
+        belongs to and register the segments against "[sname].cs.rmdup".
+        """
+        adopted = 0
+        known = set(self.sample_registry.keys())
+        for hint, fname, cns_path in self._stray_cns:
+            if hint is not None:
+                sname = hint
+            else:
+                sname = self._cns_sample_name(
+                    fname, os.path.basename(os.path.dirname(cns_path)), known)
+            rec = self.sample_registry.get(sname)
+            if rec is None or rec.cnvkit_dir:
+                continue
+            staged_dir = os.path.join(self.extract_dir, RECOVERED_CNVKIT_DIR,
+                                      f"{sname}_cnvkit_output")
+            dest = os.path.join(staged_dir, os.path.basename(cns_path))
+            try:
+                os.makedirs(staged_dir, exist_ok=True)
+                if not os.path.exists(dest):
+                    try:
+                        os.link(cns_path, dest)
+                    except OSError:
+                        safe_copy_file(cns_path, dest)
+            except OSError as e:
+                print(f"  Warning: could not stage {cns_path} for '{sname}': {e}")
+                continue
+            self._register_cnvkit_dir(sname, staged_dir)
+            adopted += 1
+
+        if adopted:
+            print(f"  Recovered {adopted} loose .cns file(s) into synthetic "
+                  f"cnvkit dirs (no cnvkit output dir was present for them).")
 
     def _register_summary_file(self, fname: str, fpath: str,
                                 sname: Optional[str] = None) -> bool:

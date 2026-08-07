@@ -2285,8 +2285,8 @@ class Aggregator:
         Apply all name_map renames to the relevant columns in every merged
         TSV file in consolidated_classification/.
 
-        Column specs  (column_name, is_prefix — True means value starts with
-        [sname]_amplicon so only the sample-name prefix is replaced):
+        Column specs  (column_name, is_prefix — True means the value starts
+        with [sname]_ so only the sample-name prefix is replaced):
         """
         # (filename_suffix,  column_name,   is_prefix)
         TSV_SPECS = [
@@ -2338,7 +2338,11 @@ class Aggregator:
                         if old_sname == new_sname:
                             continue
                         if is_prefix:
-                            prefix = old_sname + "_amplicon"
+                            # Feature IDs normally use ``_amplicon...``, but
+                            # no-feature rows use ``_NA``.  Both carry the
+                            # sample name as the complete underscore-delimited
+                            # prefix and must follow a deep rename.
+                            prefix = old_sname + "_"
                             if val.startswith(prefix):
                                 row[col] = new_sname + val[len(old_sname):]
                                 break
@@ -2426,7 +2430,11 @@ class Aggregator:
 
                 # ── Sample name remapping ─────────────────────────────────
                 if sname in self.name_map:
-                    row["Sample name"] = self.name_map[sname]
+                    new_sname = self.name_map[sname]
+                    feature_id = str(row.get("Feature ID", ""))
+                    if feature_id.startswith(sname + "_"):
+                        row["Feature ID"] = new_sname + feature_id[len(sname):]
+                    row["Sample name"] = new_sname
                 elif self.name_map:
                     print(f"  Warning: sample '{sname}' not found in name_map.")
 

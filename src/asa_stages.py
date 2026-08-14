@@ -36,6 +36,7 @@ from asa_aggregator import (
     LEGACY_CNV_BED_SUFFIX, AMPLICON_FILE_EXT_MAP, CORAL_HEADER_PREFIX,
     AMPLICON_FILE_DISCOVERY_SUFFIXES,
     AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
+    AC_NA, PLACEHOLDER_NA_COLUMNS,
     NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR, RECOVERED_CNVKIT_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
     # data structures
@@ -1325,9 +1326,10 @@ class Aggregator:
 
         After parsing, every result_table row is attached to the matching
         SampleRecord in self.sample_registry.  Records inferred by Stage 3
-        that do NOT appear in any result_table trigger a warning.  Samples
-        that appear in result_tables but have NO Stage 3 discovery data get a
-        stub SampleRecord so later stages can still produce partial output.
+        that do NOT appear in any result_table are recovered with a synthetic
+        no-feature row (see _recover_featureless_samples).  Samples that appear
+        in result_tables but have NO Stage 3 discovery data get a stub
+        SampleRecord so later stages can still produce partial output.
 
         self.feature_rows is set to a flat list of dicts — one per feature row
         across all result tables — preserving the 'sample_N' grouping key used
@@ -1342,6 +1344,11 @@ class Aggregator:
 
         # Flat ordered list of (sample_key, sname, row_dict) for easy iteration
         self.all_feature_rows: List[Tuple[str, str, dict]] = []
+
+        # { sname -> classification dir } for samples whose result_table.tsv
+        # turned out to be header-only; consumed by
+        # _recover_featureless_samples() to resolve their AC version.
+        self._featureless_cls_dirs: Dict[str, str] = {}
 
         sample_counter = 1
         found_any = False
@@ -1379,22 +1386,18 @@ class Aggregator:
                 "Ensure AmpliconClassifier has been run before aggregating."
             )
 
+        # Reconcile: recover Stage 3 discoveries that no result table mentions.
+        # Runs before the flatten below so the synthetic rows participate in
+        # Stages 5 and 6 exactly like real ones.
+        self._recover_featureless_samples()
+
         # Flatten into self.all_feature_rows for Stage 5 / 6 iteration
         self.all_feature_rows = []
         for skey, rows in self.run_json_groups.items():
             for row in rows:
                 self.all_feature_rows.append((skey, row["Sample name"], row))
 
-        # Reconcile: warn about Stage 3 discoveries not in any result table
         rt_snames = {sname for _, sname, _ in self.all_feature_rows}
-        for inferred_sname in list(self.sample_registry.keys()):
-            if inferred_sname not in rt_snames:
-                # Only warn for records that have substantive data (AA or cnvkit)
-                rec = self.sample_registry[inferred_sname]
-                if rec.aa_results_dir or rec.cnvkit_dir:
-                    print(f"  Warning: sample '{inferred_sname}' has AA/cnvkit data "
-                          f"but does not appear in any result_table.tsv — "
-                          f"it will not be included in the output.")
 
         # Reconcile: create stub records for result_table samples with no Stage 3 data
         for sname in rt_snames:
@@ -1408,6 +1411,123 @@ class Aggregator:
         print(f"  Parsed {total_features} feature row(s) across "
               f"{total_samples} sample(s) from "
               f"{len(seen_result_tables)} result_table file(s).")
+
+    def _recover_featureless_samples(self) -> None:
+        """
+        Give a synthetic placeholder feature row to any discovered sample that
+        AC classified but left out of its result_table.tsv entirely.
+
+        AC writes a one-row `NA` placeholder for a sample when AA found *no*
+        amplicons, and that row is the only reason such samples survive Stage
+        4 (the authoritative sample list). But when AA *did* find amplicons and
+        AC then filtered every one of them out as non-focal, AC emits a
+        header-only result_table.tsv with no rows at all. Before 8.2.0 those
+        samples were dropped from the project — the sample vanished outright
+        rather than appearing with zero features, even though its AA output was
+        complete and its per-sample AC log still got merged into the project
+        log. That silent gap is easy to miss in a large cohort and reads as
+        data loss when someone counts samples afterwards.
+
+        Both situations mean the same thing to a reader — "analysed, no
+        reportable focal amplification" — so both get the same representation.
+        Recovered samples keep their full reconstruction results, so a
+        downstream reader can still see the amplicons AA called even though AC
+        classified none of them as focal.
+
+        Only records carrying substantive discovered data (an AA/CoRAL results
+        dir or a cnvkit dir) are recovered, so this cannot conjure a phantom
+        sample out of an incidental registry entry.
+        """
+        table_snames = {rows[0]["Sample name"]
+                        for rows in self.run_json_groups.values() if rows}
+
+        # Sorted for determinism: sample_N keys must not depend on filesystem
+        # walk order, or reaggregating the same input renumbers run.json.
+        recovered = []
+        for sname in sorted(self.sample_registry):
+            if sname in table_snames:
+                continue
+            rec = self.sample_registry[sname]
+            if not (rec.aa_results_dir or rec.cnvkit_dir):
+                continue
+            self._resolve_versions_without_row(rec, sname)
+            skey = f"sample_{len(self.run_json_groups) + 1}"
+            self.run_json_groups[skey] = [self._make_placeholder_feature_row(sname)]
+            recovered.append(sname)
+
+        if recovered:
+            print(f"  Recovered {len(recovered)} sample(s) with AA/cnvkit data but no "
+                  f"result_table.tsv row (AC classified no focal features); "
+                  f"emitting a no-feature placeholder row for each:")
+            for sname in recovered:
+                print(f"    {sname}")
+
+    def _resolve_versions_without_row(self, rec: SampleRecord, sname: str) -> None:
+        """
+        Fill in a recovered sample's tool versions.
+
+        _parse_single_result_table() normally resolves these from the sample's
+        own result_table row, which a recovered sample has none of. The same
+        priority order still applies with that first source simply absent:
+        Stage 3's log scraping (already applied to rec) outranks
+        run_metadata.json for AA/pipeline, and AC's own classification-dir log
+        outranks it for AC — run_metadata.json's "AC_version" is a write-once
+        snapshot from AA run time that goes stale whenever a cohort is
+        reclassified later.
+        """
+        cls_dir = self._featureless_cls_dirs.get(sname)
+        if cls_dir and not rec.ac_source_dir:
+            rec.ac_source_dir = cls_dir
+        if cls_dir and not rec.ac_version:
+            rec.ac_version = self._scan_classification_log_version(cls_dir)
+
+        meta_aa, meta_paa, meta_ac = self._read_run_metadata_versions(rec)
+        if not rec.aa_version and meta_aa:
+            rec.aa_version = meta_aa
+        if not rec.amplicon_suite_pipeline_version and meta_paa:
+            rec.amplicon_suite_pipeline_version = meta_paa
+        if not rec.ac_version and meta_ac:
+            rec.ac_version = meta_ac
+
+    def _make_placeholder_feature_row(self, sname: str) -> dict:
+        """
+        Build the single placeholder row representing a sample with no
+        reportable features, matching the shape AC itself writes for a
+        zero-amplicon sample.
+
+        Only identity, `NA` feature fields, and reference version are set:
+        Stage 6's _resolve_paths() rebuilds every path column from the
+        SampleRecord, LIST_COLUMNS default to [] when absent, and
+        RUN_JSON_COLUMNS fills anything still missing with NOT_PROVIDED — so
+        naming more columns here would only duplicate that logic.
+        """
+        row = {
+            "Sample name": sname,
+            "Feature ID": f"{sname}_{AC_NA}",
+        }
+        for col in PLACEHOLDER_NA_COLUMNS:
+            row[col] = AC_NA
+        ref = self._project_reference_version()
+        if ref is not None:
+            row["Reference version"] = ref
+        return row
+
+    def _project_reference_version(self) -> Optional[str]:
+        """
+        The reference genome shared by the rows parsed so far, or None if the
+        project has no unambiguous one.
+
+        A placeholder row carries no reference of its own, but leaving the
+        field unset would make a recovered sample the only one in the project
+        reporting `Not Provided`. Stage 6 aborts on more than one distinct
+        reference, so when a single value exists it is the project's.
+        """
+        refs = {
+            row.get("Reference version")
+            for rows in self.run_json_groups.values() for row in rows
+        }
+        refs = {r for r in refs if r and not not_provided(r) and r != AC_NA}
+        return refs.pop() if len(refs) == 1 else None
 
     def _parse_single_result_table(self, rt_path: str, start_counter: int) -> None:
         """
@@ -1458,6 +1578,16 @@ class Aggregator:
         df = df.where(df != "", other=NOT_PROVIDED)
 
         cls_dir = os.path.dirname(rt_path)
+
+        # A header-only table means AC ran but kept no feature for the sample
+        # it covers. There is nothing to group over, so note the dir against
+        # the sample the filename names and let _recover_featureless_samples()
+        # synthesise the row (and pick the AC version out of this dir's log).
+        if df.empty:
+            rt_sname = rchop(os.path.basename(rt_path), AC_RESULT_TABLE_SUFFIX)
+            self._featureless_cls_dirs.setdefault(rt_sname, cls_dir)
+            return
+
         log_ac_version: Optional[str] = None  # lazily scanned, at most once per table
 
         # Find the reverse mapping sname -> existing sample_key so we can

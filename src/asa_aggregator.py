@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "8.1.0"
+__version__ = "8.2.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -238,6 +238,26 @@ RUN_JSON_COLUMNS: Tuple[str, ...] = (
 
 # Sentinel value used when a file cannot be located
 NOT_PROVIDED = "Not Provided"
+
+# AmpliconClassifier's own "analysed, but nothing to report here" token. AC
+# writes it into every feature field of the single placeholder row it emits
+# for a sample where AA found no amplicons at all. Distinct from
+# NOT_PROVIDED, which means "ASA could not locate this file".
+AC_NA = "NA"
+
+# The feature-level columns AC fills with AC_NA in that placeholder row.
+# Reused when ASA has to synthesise an equivalent row itself, so a recovered
+# sample is byte-identical to one AC placeheld on its own — see
+# Aggregator._recover_featureless_samples().
+PLACEHOLDER_NA_COLUMNS: Tuple[str, ...] = (
+    "AA amplicon number",
+    "Classification",
+    "Complexity score",
+    "Captured interval length",
+    "Feature median copy number",
+    "Feature maximum copy number",
+    "Filter flag",
+)
 
 # Name of the working extraction directory
 EXTRACTION_DIR = "extracted_from_zips"

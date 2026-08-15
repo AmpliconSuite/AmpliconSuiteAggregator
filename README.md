@@ -41,16 +41,13 @@ python src/AmpliconSuiteAggregator.py -flist <input_list.txt> -o <project_name> 
 | `--files PATH [PATH ...]` | Input files or directories directly on the command line |
 | `-o NAME` | Output prefix / project name (required) |
 | `--name_map FILE` | Two-column file: col 1 = current sample name, col 2 = replacement name. Applies a deep rename throughout all output files and tables. |
-| `-c {Yes,No}` | Re-run Amplicon Classifier on inputs (`Yes`/`No`) |
-| `--ref GENOME` | Reference genome: `hg19`, `GRCh37`, `GRCh38`, `GRCh38_viral`, or `mm10` |
+| `--exclude_samples NAME [NAME ...]` | Sample names to leave out of the output entirely. Matched against the names the samples arrive under, i.e. before `--name_map` is applied. |
+| `--no_cleanup` | Keep the temporary working directories after finishing (for debugging) |
+| `-v`, `--version` | Print the version and exit |
 
-### AmpliconRepository upload options
-
-| Flag | Description |
-|---|---|
-| `-u EMAIL` | AmpliconRepository username (email). If provided, triggers upload after aggregation. |
-| `--upload_only {Yes,No}` | Skip aggregation and upload an existing `.tar.gz` directly |
-| `-s {prod,dev}` | Target server (`prod` for most users) |
+Aggregation no longer uploads anything, and no longer runs AmpliconClassifier
+for you — run AC first, then aggregate its output. The `-u`/`-s`/`--upload_only`
+upload flags and the `-c`/`--ref` classifier flags were removed in 8.0.0.
 
 ## Examples
 
@@ -59,15 +56,22 @@ python src/AmpliconSuiteAggregator.py -flist <input_list.txt> -o <project_name> 
 python src/AmpliconSuiteAggregator.py -flist input_list.txt -o MyProject
 ```
 
-**Aggregate and upload to AmpliconRepository:**
+**Rename samples on the way through:**
 ```bash
-python src/AmpliconSuiteAggregator.py -flist input_list.txt -o MyProject -u you@email.com -s prod
+python src/AmpliconSuiteAggregator.py -flist input_list.txt -o MyProject --name_map renames.tsv
 ```
 
-**Upload an already-aggregated file without re-aggregating:**
+**Drop samples from a project you already aggregated:**
 ```bash
-python src/AmpliconSuiteAggregator.py --files MyProject.tar.gz -o MyProject -u you@email.com --upload_only Yes -s prod
+python src/AmpliconSuiteAggregator.py --files MyProject.tar.gz -o MyProject_v2 \
+    --exclude_samples SampleA SampleB
 ```
+An aggregated archive is itself valid input, so this is how you remove a sample
+from an existing project: everything belonging to `SampleA`/`SampleB` is left
+out — their directories under `results/samples/`, their rows in `run.json`,
+`aggregated_results.csv` and every consolidated classification table, and their
+per-amplicon files. A name matching no sample is reported as a warning rather
+than failing the run.
 
 ## Input files
 

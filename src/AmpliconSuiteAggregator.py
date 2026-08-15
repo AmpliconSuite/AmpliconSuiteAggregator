@@ -100,6 +100,19 @@ def build_parser() -> argparse.ArgumentParser:
              "to replacement names (col 2). Enables batch renaming of samples in run.json.",
     )
     parser.add_argument(
+        "--exclude_samples",
+        nargs="+",
+        metavar="NAME",
+        type=str,
+        default=None,
+        help="Sample names to leave out of the output entirely. Matched against the "
+             "names the samples arrive under, before --name_map is applied. Everything "
+             "belonging to an excluded sample is dropped: its directory under "
+             "results/samples/, its rows in run.json, aggregated_results.csv and every "
+             "consolidated classification table, and its per-amplicon files. Names that "
+             "match no sample are reported as a warning.",
+    )
+    parser.add_argument(
         "--no_cleanup",
         action="store_true",
         default=False,
@@ -138,6 +151,8 @@ def main() -> None:
     print(f"No-cleanup    : {args.no_cleanup}")
     if args.name_map:
         print(f"Name map      : {args.name_map}")
+    if args.exclude_samples:
+        print(f"Excluding     : {', '.join(args.exclude_samples)}")
     print()
 
     aggregator = Aggregator(
@@ -145,6 +160,7 @@ def main() -> None:
         project_name=args.output_name,
         name_map_file=args.name_map,
         no_cleanup=args.no_cleanup,
+        exclude_samples=args.exclude_samples,
     )
 
     if not aggregator.completed:

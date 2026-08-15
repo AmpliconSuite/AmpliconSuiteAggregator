@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "8.2.0"
+__version__ = "8.3.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -166,6 +166,37 @@ AC_MERGE_TARGETS: List[Dict] = [
     {"suffix": "_result_table.tsv",                     "has_header": True,  "is_dir": False},
     {"suffix": "_SV_summaries",                         "has_header": None,  "is_dir": True,  "rescue_suffix": "_SV_summary.tsv"},
 ]
+
+# Where a sample name can be found in each consolidated classification table.
+# One source of truth for the two operations that need it: the deep rename
+# applied with --name_map (Stage 5b) and the row filtering applied with
+# --exclude_samples (Stage 5).  Keeping one table is the point — AC spells the
+# sample column four different ways across these files, and a second copy of
+# that knowledge somewhere else goes stale the moment AC adds a file.
+#
+# Each entry: (filename_suffix, column, is_feature_id)
+#   column         — the column name, or an int index for a headerless file
+#                    (_ecDNA_context_calls.tsv is written without a header).
+#   is_feature_id  — the value is a Feature ID carrying the sample name as a
+#                    prefix ("[sname]_amplicon[N]_[class]_[n]", or "[sname]_NA"
+#                    for AC's no-feature placeholder row) rather than the bare
+#                    sample name.  Match these with feature_id_belongs_to(),
+#                    never with a plain "[sname]_" prefix test.
+SAMPLE_COLUMN_SPECS: Tuple[Tuple[str, object, bool], ...] = (
+    ("_amplicon_classification_profiles.tsv", "sample_name",  False),
+    ("_ecDNA_context_calls.tsv",              0,              True),
+    ("_ecDNA_counts.tsv",                     "#sample",      False),
+    ("_fan_calls.tsv",                        "sample_name",  False),
+    ("_feature_basic_properties.tsv",         "feature_ID",   True),
+    ("_feature_complexity.tsv",               "sample",       False),
+    ("_feature_entropy.tsv",                  "sample",       False),
+    ("_feature_similarity_scores.tsv",        "Amp1",         True),
+    ("_feature_similarity_scores.tsv",        "Amp2",         True),
+    ("_gene_list.tsv",                        "sample_name",  False),
+    ("_lncRNA_list.tsv",                      "sample_name",  False),
+    ("_result_table.tsv",                     "Sample name",  False),
+    ("_result_table.tsv",                     "Feature ID",   True),
+)
 
 # Columns in result_table.tsv that hold file paths needing re-resolution
 PATH_COLUMNS: Tuple[str, ...] = (
@@ -396,6 +427,37 @@ def read_name_map(name_map_file: Optional[str]) -> Dict[str, str]:
         sys.exit(1)
     print(f"Name map loaded: {len(remap)} entry/entries.")
     return remap
+
+
+def feature_id_belongs_to(value: str, sname: str) -> bool:
+    """
+    True when a Feature ID names the sample `sname`.
+
+    AC builds Feature IDs by prefixing the sample name: `[sname]_amplicon[N]_
+    [class]_[n]`, or `[sname]_NA` for the placeholder row it writes when there
+    is nothing to report.  The bare sample name also appears in the same column
+    position in some AC generations, so it is accepted too.
+
+    Testing a plain `[sname]_` prefix would be wrong, and quietly so: a cohort
+    holding both `HCC827` and `HCC827_res` has `HCC827_res_amplicon1_ecDNA_1`
+    starting with `HCC827_`, so `HCC827` would claim the other sample's rows.
+    """
+    return (value == sname
+            or value == f"{sname}_NA"
+            or value.startswith(f"{sname}_amplicon"))
+
+
+def amplicon_file_belongs_to(fname: str, sname: str) -> bool:
+    """
+    True when a flat per-amplicon classification file belongs to `sname`.
+
+    Covers the files AC writes into `_classification_bed_files/`,
+    `_annotated_cycles_files/`, `_SV_summaries/` and `bfbarchitect_outputs/`,
+    all of which are named `[sname]_amplicon[N]...`.  Same prefix-collision
+    caveat as feature_id_belongs_to(): the `_amplicon` boundary is what makes
+    `HCC827` stop short of `HCC827_res`.
+    """
+    return fname.startswith(f"{sname}_amplicon")
 
 
 def extract_tool_versions(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:

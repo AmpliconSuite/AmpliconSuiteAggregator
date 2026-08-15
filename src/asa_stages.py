@@ -26,7 +26,7 @@ import sys
 import tarfile
 import zipfile
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -35,7 +35,7 @@ from asa_aggregator import (
     ARCHIVE_EXTENSIONS, EXCLUSION_SUFFIXES, AA_DIR_INCLUDE_SUFFIXES, MISC_AA_SUFFIXES,
     LEGACY_CNV_BED_SUFFIX, AMPLICON_FILE_EXT_MAP, CORAL_HEADER_PREFIX,
     AMPLICON_FILE_DISCOVERY_SUFFIXES,
-    AC_MERGE_TARGETS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
+    AC_MERGE_TARGETS, SAMPLE_COLUMN_SPECS, RUN_JSON_COLUMNS, AGG_CSV_COLUMNS, LIST_COLUMNS,
     AC_NA, PLACEHOLDER_NA_COLUMNS,
     NOT_PROVIDED, EXTRACTION_DIR, RESULTS_DIR, RECOVERED_CNVKIT_DIR,
     AC_PROFILES_SUFFIX, AC_RESULT_TABLE_SUFFIX,
@@ -43,6 +43,7 @@ from asa_aggregator import (
     SampleRecord,
     # utilities
     rchop, not_provided, parse_list_field, read_name_map,
+    feature_id_belongs_to, amplicon_file_belongs_to,
     is_valid_aa_results_dir, is_classification_dir,
     is_aa_summary_content, is_coral_summary_content,
     make_tarball, safe_copy_file, safe_copytree, relative_to_results,
@@ -65,6 +66,11 @@ class Aggregator:
       input_paths       — validated list of input archive/directory paths
       project_name      — prefix for consolidated classification files and output archive
       name_map          — { old_sname -> new_sname } rename dict
+      exclude_samples   — { sname } dropped from the output entirely (Stage 4 +
+                          Stage 5); empty set means "keep everything"
+      unmatched_exclusions — sorted names in exclude_samples that matched no
+                          sample in the input; a caller that took the list from
+                          a user should surface these rather than report success
       no_cleanup        — when True, temp dirs are preserved after completion
       work_dir          — absolute cwd at construction time
       extract_dir       — <work_dir>/extracted_from_zips/
@@ -100,10 +106,18 @@ class Aggregator:
         name_map_file: Optional[str] = None,
         no_cleanup: bool = False,
         work_dir: Optional[str] = None,
+        exclude_samples: Optional[Iterable[str]] = None,
     ):
         self.input_paths = input_paths
         self.project_name = project_name
         self.name_map = read_name_map(name_map_file)
+        # Names are compared verbatim against AC's own sample names, so only
+        # surrounding whitespace is forgiven — a caller passing user input
+        # should not have it silently case-folded into matching something else.
+        self.exclude_samples: Set[str] = {
+            s.strip() for s in (exclude_samples or []) if s and s.strip()
+        }
+        self.unmatched_exclusions: List[str] = []
         self.no_cleanup = no_cleanup
         self.completed = False
         self._start_time: float = time.perf_counter()
@@ -1391,6 +1405,12 @@ class Aggregator:
         # Stages 5 and 6 exactly like real ones.
         self._recover_featureless_samples()
 
+        # Drop excluded samples once the sample list is complete — after
+        # recovery, so a sample that only exists by way of recovery can still
+        # be excluded, and before the flatten below, so nothing downstream
+        # ever sees it.
+        self._apply_sample_exclusions()
+
         # Flatten into self.all_feature_rows for Stage 5 / 6 iteration
         self.all_feature_rows = []
         for skey, rows in self.run_json_groups.items():
@@ -1411,6 +1431,103 @@ class Aggregator:
         print(f"  Parsed {total_features} feature row(s) across "
               f"{total_samples} sample(s) from "
               f"{len(seen_result_tables)} result_table file(s).")
+
+    def _apply_sample_exclusions(self) -> None:
+        """
+        Remove every trace of the samples named in --exclude_samples.
+
+        This runs against the *input* sample names, before --name_map is
+        applied in Stage 5b — you exclude a sample by the name it arrives
+        under, not the name it would have left under.
+
+        Dropping the sample here, from the authoritative list, is what makes
+        the rest free: Stage 5 builds sample directories by walking
+        sample_registry, and Stage 6 builds run.json and
+        aggregated_results.csv by walking run_json_groups, so neither needs to
+        know anything about exclusion.  Only the consolidated classification
+        merge needs its own filter (see _merge_ac_* below), because those
+        tables come from cohort-wide AC files that hold rows for samples this
+        aggregation is not otherwise touching.
+
+        run.json's sample_N keys are renumbered contiguously afterwards, so
+        the output is indistinguishable from aggregating the surviving inputs
+        on their own.
+        """
+        if not self.exclude_samples:
+            return
+
+        print("\n--- Sample exclusion ---")
+
+        present = {rows[0]["Sample name"]
+                   for rows in self.run_json_groups.values() if rows}
+        present |= set(self.sample_registry)
+
+        # A name that matched nothing is worth saying out loud rather than
+        # reporting a successful removal that removed nothing.
+        self.unmatched_exclusions = sorted(self.exclude_samples - present)
+        for sname in self.unmatched_exclusions:
+            print(f"  Warning: '{sname}' was marked for exclusion but does not "
+                  f"appear in this input.")
+
+        kept_groups = [rows for rows in self.run_json_groups.values()
+                       if not (rows and rows[0]["Sample name"] in self.exclude_samples)]
+        dropped = len(self.run_json_groups) - len(kept_groups)
+        self.run_json_groups = {f"sample_{i}": rows
+                                for i, rows in enumerate(kept_groups, 1)}
+
+        for sname in list(self.sample_registry):
+            if sname in self.exclude_samples:
+                del self.sample_registry[sname]
+
+        if not self.run_json_groups:
+            self._abort("Every sample in the input was excluded — "
+                        "there is nothing left to aggregate.")
+
+        print(f"  Excluded {dropped} sample(s); "
+              f"{len(self.run_json_groups)} remain.")
+
+    # ------------------------------------------------------------------
+    # Exclusion helpers, shared by the Stage 5 classification merges
+    # ------------------------------------------------------------------
+
+    def _excluded_column_specs(self, suffix: str) -> List[Tuple[object, bool]]:
+        """
+        The (column, is_feature_id) specs that identify a sample in the merge
+        target `suffix` — empty when nothing is being excluded, or when this
+        file carries no sample column at all (AC's own .log).
+        """
+        if not self.exclude_samples:
+            return []
+        return [(col, is_fid) for spec_suffix, col, is_fid in SAMPLE_COLUMN_SPECS
+                if spec_suffix == suffix]
+
+    def _value_names_excluded_sample(self, value: str, is_feature_id: bool) -> bool:
+        if is_feature_id:
+            return any(feature_id_belongs_to(value, sname)
+                       for sname in self.exclude_samples)
+        return value in self.exclude_samples
+
+    def _headerless_line_excluded(self, line: str,
+                                   specs: List[Tuple[object, bool]]) -> bool:
+        """
+        Whether a line of a headerless merge target names an excluded sample.
+        Specs for such a file address the column by integer index; a short
+        line (or a blank one) simply has nothing to match and is kept.
+        """
+        fields = line.rstrip("\n").split("\t")
+        for col, is_feature_id in specs:
+            if not isinstance(col, int) or col >= len(fields):
+                continue
+            if self._value_names_excluded_sample(fields[col], is_feature_id):
+                return True
+        return False
+
+    def _file_belongs_to_excluded_sample(self, fname: str) -> bool:
+        """For the flat per-amplicon classification subdirectories."""
+        if not self.exclude_samples:
+            return False
+        return any(amplicon_file_belongs_to(fname, sname)
+                   for sname in self.exclude_samples)
 
     def _recover_featureless_samples(self) -> None:
         """
@@ -2096,7 +2213,12 @@ class Aggregator:
             self._merge_ac_tsvs_with_header(sources, out_path, suffix)
             return
 
+        # Headerless targets are matched by column index. Only
+        # _ecDNA_context_calls.tsv has a spec; AC's own .log has none and is
+        # copied through untouched.
+        specs = self._excluded_column_specs(suffix)
         lines_written = 0
+        lines_dropped = 0
         with open(out_path, "w") as out_fh:
             for src_path in sources:
                 try:
@@ -2106,8 +2228,15 @@ class Aggregator:
                     print(f"  Warning: could not read {src_path}: {e}")
                     continue
                 for line in raw_lines:
+                    if specs and self._headerless_line_excluded(line, specs):
+                        lines_dropped += 1
+                        continue
                     out_fh.write(line)
                     lines_written += 1
+
+        if lines_dropped:
+            print(f"  Dropped {lines_dropped} excluded-sample line(s) from "
+                  f"{os.path.basename(out_path)}")
 
         print(f"  Merged {len(sources)} file(s) -> {os.path.basename(out_path)} "
               f"({lines_written} data line(s))")
@@ -2142,6 +2271,21 @@ class Aggregator:
             return
 
         merged = pd.concat(dfs, ignore_index=True, sort=False).fillna("")
+
+        specs = self._excluded_column_specs(suffix)
+        if specs:
+            before = len(merged)
+            for col, is_feature_id in specs:
+                if col not in merged.columns:
+                    continue
+                keep = ~merged[col].astype(str).map(
+                    lambda v, fid=is_feature_id:
+                        self._value_names_excluded_sample(v, fid))
+                merged = merged[keep]
+            if len(merged) != before:
+                print(f"  Dropped {before - len(merged)} excluded-sample row(s) "
+                      f"from {os.path.basename(out_path)}")
+
         merged.to_csv(out_path, sep="\t", index=False)
         print(f"  Merged {len(dfs)} file(s) -> {os.path.basename(out_path)} "
               f"({len(merged)} data line(s))")
@@ -2164,11 +2308,15 @@ class Aggregator:
             return
 
         files_copied = 0
+        files_excluded = 0
         for src_dir in sources:
             try:
                 for fname in os.listdir(src_dir):
                     src_file = os.path.join(src_dir, fname)
                     if not os.path.isfile(src_file):
+                        continue
+                    if self._file_belongs_to_excluded_sample(fname):
+                        files_excluded += 1
                         continue
                     dest_file = self._unique_dest(out_dir, fname)
                     shutil.copy2(src_file, dest_file)
@@ -2177,7 +2325,8 @@ class Aggregator:
                 print(f"  Warning: could not read subdir {src_dir}: {e}")
 
         print(f"  Merged {len(sources)} dir(s) -> {os.path.basename(out_dir)}/ "
-              f"({files_copied} file(s))")
+              f"({files_copied} file(s))"
+              + (f", {files_excluded} skipped as excluded" if files_excluded else ""))
 
     def _merge_ac_compressed_dir(self, suffix: str, archive_name: str) -> None:
         """
@@ -2213,6 +2362,8 @@ class Aggregator:
                 for root, _, fnames in os.walk(src_dir):
                     for fname in fnames:
                         if fname.startswith("."):
+                            continue
+                        if self._file_belongs_to_excluded_sample(fname):
                             continue
                         src_file = os.path.join(root, fname)
                         dest_file = self._unique_dest(tmp_dir, fname)
@@ -2250,6 +2401,8 @@ class Aggregator:
                     if fname.startswith("."):
                         continue
                     if "_amplicon" not in fname or not fname.endswith(file_suffix):
+                        continue
+                    if self._file_belongs_to_excluded_sample(fname):
                         continue
                     src = os.path.join(search_dir, fname)
                     if not os.path.isfile(src) or src in seen:
@@ -2410,86 +2563,127 @@ class Aggregator:
                     os.rename(os.path.join(subdir, fname),
                               os.path.join(subdir, new_sname + fname[len(old_sname):]))
 
+    def _renamed_value(self, val: str, is_feature_id: bool) -> str:
+        """
+        Apply the name map to one cell that holds a sample name (or a Feature
+        ID built from one).  Returns val unchanged when no mapping applies.
+
+        Feature IDs are matched with feature_id_belongs_to() rather than a
+        bare "[old]_" prefix test, so renaming HCC827 in a cohort that also
+        holds HCC827_res cannot rewrite the other sample's Feature IDs.
+        """
+        for old_sname, new_sname in self.name_map.items():
+            if old_sname == new_sname:
+                continue
+            if is_feature_id:
+                if feature_id_belongs_to(val, old_sname):
+                    return new_sname + val[len(old_sname):]
+            elif val == old_sname:
+                return new_sname
+        return val
+
     def _patch_classif_tsvs(self) -> None:
         """
-        Apply all name_map renames to the relevant columns in every merged
-        TSV file in consolidated_classification/.
-
-        Column specs  (column_name, is_prefix — True means the value starts
-        with [sname]_ so only the sample-name prefix is replaced):
+        Apply all name_map renames to the sample-name columns of every merged
+        TSV in consolidated_classification/, per SAMPLE_COLUMN_SPECS — the
+        same table --exclude_samples filters on, so the two operations can
+        never disagree about where a sample name lives.
         """
-        # (filename_suffix,  column_name,   is_prefix)
-        TSV_SPECS = [
-            ("_amplicon_classification_profiles.tsv", "sample_name",  False),
-            ("_ecDNA_counts.tsv",                     "#sample",       False),
-            ("_fan_calls.tsv",                        "sample_name",   False),
-            ("_feature_basic_properties.tsv",         "feature_ID",    True),
-            ("_feature_complexity.tsv",               "sample",        False),
-            ("_feature_entropy.tsv",                  "sample",        False),
-            ("_feature_similarity_scores.tsv",        "Amp1",          True),
-            ("_feature_similarity_scores.tsv",        "Amp2",          True),
-            ("_gene_list.tsv",                        "sample_name",   False),
-            ("_lncRNA_list.tsv",                      "sample_name",   False),
-            ("_result_table.tsv",                     "Sample name",   False),
-            ("_result_table.tsv",                     "Feature ID",    True),
-        ]
         # Group specs by file so each file is read/written only once
         file_specs: Dict[str, list] = defaultdict(list)
-        for suffix, col, is_prefix in TSV_SPECS:
+        for suffix, col, is_feature_id in SAMPLE_COLUMN_SPECS:
             fname = f"{self.project_name}{suffix}"
-            file_specs[fname].append((col, is_prefix))
+            file_specs[fname].append((col, is_feature_id))
 
         for fname, specs in file_specs.items():
             fpath = os.path.join(self.classif_dir, fname)
             if not os.path.isfile(fpath):
                 continue
-            try:
-                with open(fpath, "r", newline="") as fh:
-                    lines = fh.readlines()
-            except OSError as e:
-                print(f"  Warning: could not read {fname} for renaming: {e}")
+            # A file addressed by integer index is one AC writes without a
+            # header (_ecDNA_context_calls.tsv); it has to be patched
+            # positionally, since there are no field names to key on.
+            if any(isinstance(col, int) for col, _ in specs):
+                self._patch_headerless_tsv(fpath, specs)
+            else:
+                self._patch_headed_tsv(fpath, specs)
+
+    def _patch_headed_tsv(self, fpath: str, specs: List[Tuple[object, bool]]) -> None:
+        fname = os.path.basename(fpath)
+        try:
+            with open(fpath, "r", newline="") as fh:
+                lines = fh.readlines()
+        except OSError as e:
+            print(f"  Warning: could not read {fname} for renaming: {e}")
+            return
+
+        if not lines:
+            return
+
+        reader = csv.DictReader(io.StringIO("".join(lines)), delimiter="\t")
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            return
+        rows = list(reader)
+
+        for row in rows:
+            for col, is_feature_id in specs:
+                if col not in row:
+                    continue
+                row[col] = self._renamed_value(row[col], is_feature_id)
+
+        try:
+            with open(fpath, "w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                        delimiter="\t", extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"  Patched {fname}")
+        except OSError as e:
+            print(f"  Warning: could not write {fname} after renaming: {e}")
+
+    def _patch_headerless_tsv(self, fpath: str,
+                              specs: List[Tuple[object, bool]]) -> None:
+        """
+        Rename inside a headerless merged table by column index.
+
+        Before 8.3.0 no headerless file was patched at all, so a --name_map
+        run left _ecDNA_context_calls.tsv still carrying the old sample names
+        in its Feature ID column while every other table had moved on.
+        """
+        fname = os.path.basename(fpath)
+        try:
+            with open(fpath, "r", newline="") as fh:
+                lines = fh.readlines()
+        except OSError as e:
+            print(f"  Warning: could not read {fname} for renaming: {e}")
+            return
+
+        out_lines = []
+        changed = False
+        for line in lines:
+            stripped = line.rstrip("\n")
+            if not stripped:
+                out_lines.append(line)
                 continue
+            fields = stripped.split("\t")
+            for col, is_feature_id in specs:
+                if not isinstance(col, int) or col >= len(fields):
+                    continue
+                new_val = self._renamed_value(fields[col], is_feature_id)
+                if new_val != fields[col]:
+                    fields[col] = new_val
+                    changed = True
+            out_lines.append("\t".join(fields) + "\n")
 
-            if not lines:
-                continue
+        if not changed:
+            return
 
-            reader = csv.DictReader(io.StringIO("".join(lines)), delimiter="\t")
-            fieldnames = reader.fieldnames
-            if not fieldnames:
-                continue
-            rows = list(reader)
-
-            for row in rows:
-                for col, is_prefix in specs:
-                    if col not in row:
-                        continue
-                    val = row[col]
-                    for old_sname, new_sname in self.name_map.items():
-                        if old_sname == new_sname:
-                            continue
-                        if is_prefix:
-                            # Feature IDs normally use ``_amplicon...``, but
-                            # no-feature rows use ``_NA``.  Both carry the
-                            # sample name as the complete underscore-delimited
-                            # prefix and must follow a deep rename.
-                            prefix = old_sname + "_"
-                            if val.startswith(prefix):
-                                row[col] = new_sname + val[len(old_sname):]
-                                break
-                        else:
-                            if val == old_sname:
-                                row[col] = new_sname
-                                break
-
-            try:
-                with open(fpath, "w", newline="") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=fieldnames,
-                                           delimiter="\t", extrasaction="ignore")
-                    writer.writeheader()
-                    writer.writerows(rows)
-                print(f"  Patched {fname}")
-            except OSError as e:
-                print(f"  Warning: could not write {fname} after renaming: {e}")
+        try:
+            with open(fpath, "w", newline="") as fh:
+                fh.writelines(out_lines)
+            print(f"  Patched {fname}")
+        except OSError as e:
+            print(f"  Warning: could not write {fname} after renaming: {e}")
 
     # ==================================================================
     # Stage 6 — run.json constructor

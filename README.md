@@ -7,6 +7,7 @@ Aggregates results from [AmpliconSuite-pipeline](https://github.com/AmpliconSuit
 - The output `.tar.gz` can be directly uploaded to [AmpliconRepository.org](https://AmpliconRepository.org).
 - Supports batch sample renaming via a name map file.
 - Can include auxiliary files alongside the upload; place them in a directory containing a file named `AUX_DIR`.
+- Output is reproducible: the same inputs give a byte-identical `.tar.gz`, and so does re-aggregating our own output. Archives don't keep file timestamps or owners (mtimes are 0); AmpliconRepository records when each project version was created.
 
 ## Installation
 

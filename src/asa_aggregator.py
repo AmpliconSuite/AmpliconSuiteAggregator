@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-__version__ = "8.3.0"
+__version__ = "8.3.1"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -573,18 +573,47 @@ def make_tarball(source_dir: str, dest_tar_path: str,
     CoRAL cnvkit dir is named bare 'cnvkit_output/', but the emitted
     archive must always be rooted at '[sname]_cnvkit_output/' so that a
     reaggregation of our own output round-trips identically.
+
+    The archive depends only on the files' names and bytes (and whether
+    each is executable): members are written in sorted order, and the gzip
+    header and every member carry mtime 0 and no owner. Aggregating the
+    same inputs twice -- or re-aggregating our own output -- therefore gives
+    byte-identical archives, which is what lets AmpliconRepository store a
+    file once across the versions of a project.
     """
     root = root_name or os.path.basename(source_dir.rstrip("/"))
-    with tarfile.open(dest_tar_path, "w:gz") as tar:
-        for root_dir, dirs, files in os.walk(source_dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__MACOSX"]
-            for fname in files:
-                if fname.startswith(".") or any(fname.endswith(excl) for excl in exclusions):
-                    continue
-                fpath = os.path.join(root_dir, fname)
-                arcname = os.path.join(
-                    root, os.path.relpath(fpath, source_dir))
-                tar.add(fpath, arcname=arcname)
+    entries = []
+    for root_dir, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__MACOSX"]
+        for fname in files:
+            if fname.startswith(".") or any(fname.endswith(excl) for excl in exclusions):
+                continue
+            fpath = os.path.join(root_dir, fname)
+            arcname = os.path.join(
+                root, os.path.relpath(fpath, source_dir))
+            entries.append((arcname, fpath))
+    entries.sort()
+
+    with open(dest_tar_path, "wb") as raw, \
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w") as tar:
+        for arcname, fpath in entries:
+            tar.add(fpath, arcname=arcname, filter=_reproducible_tarinfo)
+
+
+def _reproducible_tarinfo(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    """
+    Strip what describes the machine and the moment rather than the file:
+    the mtime, owner ids and names, and the umask's say in the mode. File
+    timestamps are not kept -- the repository records when each project
+    version was created, which is the date that means anything there.
+    """
+    info.mtime = 0
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    if info.isfile():
+        info.mode = 0o755 if info.mode & 0o111 else 0o644
+    return info
 
 
 def convert_cnvkit_cns_to_bed(cns_path: str, dest_path: str, min_cn: float = 0.0) -> None:
@@ -666,10 +695,15 @@ def gzip_file_in_place(fpath: str) -> bool:
     slim containers with no gzip installed, where a subprocess call fails
     with FileNotFoundError and, if that is swallowed, silently skips the
     compression entirely.
+
+    The header's mtime is 0, not the time of writing, so the same file
+    always compresses to the same bytes (see make_tarball).
     """
     gz_path = fpath + ".gz"
     try:
-        with open(fpath, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+        with open(fpath, "rb") as f_in, open(gz_path, "wb") as raw, \
+                gzip.GzipFile(filename=os.path.basename(fpath), mode="wb",
+                              fileobj=raw, mtime=0) as f_out:
             shutil.copyfileobj(f_in, f_out)
         os.remove(fpath)
         return True

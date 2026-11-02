@@ -7,6 +7,7 @@ Aggregates results from [AmpliconSuite-pipeline](https://github.com/AmpliconSuit
 - The output `.tar.gz` can be directly uploaded to [AmpliconRepository.org](https://AmpliconRepository.org).
 - Supports batch sample renaming via a name map file.
 - Can include auxiliary files alongside the upload; place them in a directory containing a file named `AUX_DIR`.
+- Archive packaging is deterministic: unchanged member names, contents, and executable flags produce byte-identical archives within the same Python/zlib build. Archives don't keep file timestamps or owners (mtimes are 0); AmpliconRepository records when each project version was created. Sample keys in `run.json` are numbered by final sample name, including after renaming.
 
 ## Installation
 
@@ -24,6 +25,29 @@ pip install -r requirements.txt
 
 ## Dependencies
 Python packages: `pandas`, `requests`
+
+## Tests
+
+From a source checkout:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-test.txt
+python -m pytest tests/
+```
+
+Tests create synthetic inputs in pytest temporary directories. They require no
+local sample archives, absolute data paths, network access, or external pipeline
+tools. Fixture builders live in `tests/fixtures/`; local datasets and generated
+outputs under `tests/` remain ignored by Git.
+
+The suite covers archive metadata and contents, CNVkit copy-number conversion,
+directory/tar/zip inputs, featureless-sample recovery, sample exclusion with
+overlapping names, and byte-identical reaggregation with and without renaming.
+Round-trip comparisons keep the project name and Python/zlib build fixed and
+apply renaming only to the original input. These synthetic cases do not cover
+every supported upstream tool or data layout.
 
 ## Usage
 

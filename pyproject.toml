@@ -1,6 +1,6 @@
 [project]
 name = "AmpliconSuiteAggregator"
-version = "8.3.0"
+version = "8.3.1"
 authors = [
   { name="Thorin Tabor" },
   { name = "Jens Luebeck", email="jluebeck@ucsd.edu" },

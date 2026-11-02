@@ -7,5 +7,14 @@ pypi_api_token
 gpunit/inputs/input_list.txt
 gpunit/inputs/input_list.txt
 src/AmpliconSuiteAggregator.egg-info/
-tests/
 CLAUDE.md
+.pytest_cache/
+.venv/
+
+# Keep local sample data and generated outputs private; allow test source only.
+/tests/*
+!/tests/test_*.py
+!/tests/conftest.py
+!/tests/fixtures/
+/tests/fixtures/*
+!/tests/fixtures/*.py

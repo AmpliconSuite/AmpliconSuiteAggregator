@@ -2634,7 +2634,8 @@ class Aggregator:
         try:
             with open(fpath, "w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=fieldnames,
-                                        delimiter="\t", extrasaction="ignore")
+                                        delimiter="\t", extrasaction="ignore",
+                                        lineterminator="\n")
                 writer.writeheader()
                 writer.writerows(rows)
             print(f"  Patched {fname}")
@@ -2770,6 +2771,14 @@ class Aggregator:
 
                 if processed % 100 == 0:
                     print(f"  Processed {processed} feature rows...")
+
+        # Number samples by their final names, after remapping. Discovery order
+        # can change when separate input tables become one consolidated table
+        # on reaggregation; sorting JSON keys alone cannot fix those assignments.
+        ordered_groups = sorted(self.run_json_groups.values(),
+                                key=lambda rows: rows[0]["Sample name"])
+        self.run_json_groups = {f"sample_{i}": rows
+                                for i, rows in enumerate(ordered_groups, 1)}
 
         # ── Write run.json ────────────────────────────────────────────────
         run_json_path = os.path.join(self.results_dir, "run.json")
